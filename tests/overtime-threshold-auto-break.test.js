@@ -18,7 +18,7 @@ function appContext() {
   ALLOWED_BREAK_MINUTES:60,REQUIRED_PAID_WORK_MINUTES:480,DEFAULT_LATE_GRACE_MINUTES:10,UNDERTIME_BLOCK_MINUTES:30,
   getAttendanceDayIntegrity:logs=>({isValidCompleted:logs.every(l=>l.time_in&&l.time_out),completedLogs:logs})}
  vm.createContext(ctx)
- for(const name of ['safeNum','minutesFromTime','normalizeTimeInputValue','clockMinuteToTimeValue','getClockMinuteNearestTimeline','diffMinutesAcrossMidnight','getApprovedMealBreakOverrideMinutes','getRecordedBreakMinutes','getCombinedAttendanceSpanMinutes','roundPenaltyMinutes','roundChargeableUndertimeMinutes','getScheduleAnchoredAttendanceMetrics','getAttendanceDayWorkMetrics','getPayrollAttendanceDeductionSplit','roundPayableOvertimeMinutes','getAttendanceDayActualOvertimeMinutes','getAttendanceDayActualOvertimeWindow','getAttendanceOvertimeDisplayStatus']) vm.runInContext(extract(name),ctx)
+ for(const name of ['safeNum','minutesFromTime','normalizeTimeInputValue','clockMinuteToTimeValue','getClockMinuteNearestTimeline','diffMinutesAcrossMidnight','getApprovedMealBreakOverrideMinutes','getRecordedBreakMinutes','getCombinedAttendanceSpanMinutes','roundPenaltyMinutes','roundChargeableUndertimeMinutes','getScheduleAnchoredAttendanceMetrics','getAttendanceDayWorkMetrics','getAttendanceBreakPunchEvidence','buildPayrollMealBreakReviewException','getPayrollAttendanceDeductionSplit','roundPayableOvertimeMinutes','getAttendanceDayActualOvertimeMinutes','getAttendanceDayActualOvertimeWindow','getAttendanceOvertimeDisplayStatus']) vm.runInContext(extract(name),ctx)
  return ctx
 }
 function log(time_in,time_out,br=60,shift_start=null,shift_end=null,date='2026-10-11') {
@@ -32,9 +32,9 @@ test('strict threshold counts the full eligible duration from 30, preserves earl
  assert.equal(payableOvertimeMinutes(17,'2026-10-10'),17)
  assert.equal(payableOvertimeMinutes(59,'2026-10-05'),30)
 })
-test('five-hour boundary applies recorded breaks; longer shifts await review or retain punches',()=>{
+test('five-hour boundary applies recorded breaks; longer shifts default to 60 minutes or retain approved exceptions and overbreak',()=>{
  for(const span of [60,240,300]) assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:span,recordedMinutes:0}),0)
- for(const span of [301,536,539,540,571]) assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:span,recordedMinutes:0}),0)
+ for(const span of [301,536,539,540,571]) assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:span,recordedMinutes:0}),60)
  assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:301,recordedMinutes:15}),60)
  assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:600,recordedMinutes:0,legacyOverride:0}),0)
  assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:600,recordedMinutes:75}),75)
@@ -53,8 +53,8 @@ test('Sheryl four-hour shifts have no meal deduction while scheduled undertime r
   assert.equal(metrics.undertimeMinutes,240)
  }
  const sixHours=ctx.getAttendanceDayWorkMetrics([log('08:00','14:00',0,'08:00','17:00')])
- assert.equal(sixHours.deductedBreakMinutes,0)
- assert.equal(sixHours.undertimeMinutes,120)
+ assert.equal(sixHours.deductedBreakMinutes,60)
+ assert.equal(sixHours.undertimeMinutes,180)
 })
 test('Myra October 16 short shift credits the full continuous duty and keeps separate undertime',()=>{
  const ctx=appContext()
@@ -85,7 +85,7 @@ test('actual filing window and badge respect 29/30/31 on day and overnight shift
  const early=log('07:00','17:20',60,'08:00','17:00')
  assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([early]),0)
  const noSchedule=log('08:00','17:31',0)
- assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([noSchedule]),91)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([noSchedule]),31)
  const incomplete=log('08:00',null)
  incomplete.status='No Assigned Shift'
  assert.equal(ctx.getAttendanceOvertimeDisplayStatus(incomplete),'No Assigned Shift')
@@ -265,4 +265,34 @@ test('database filing guard rejects early-arrival minutes and accepts the correc
    values('${id}','${emp}','2026-10-11','13:28','00:53','Completed',60);`)
   await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',113)`)
  } finally {await db.close()}
+})
+
+// Exercise the shared helper used by both computePayroll and readiness/rebuild.
+test('screenshot completed shifts have one default meal deduction and no payroll hold',()=>{
+ const ctx=appContext()
+ for(const [date,start,end] of [
+  ['2026-10-23','07:57:59','17:01:40'],
+  ['2026-10-25','08:01:37','17:06:02'],
+  ['2026-10-12','08:45:22','18:01:09']
+ ]) {
+  const row=log(start,end,0,'08:00','17:00',date)
+  const metrics=ctx.getAttendanceDayWorkMetrics([row])
+  assert.equal(metrics.recordedBreakMinutes,0)
+  assert.equal(metrics.deductedBreakMinutes,60)
+  assert.equal(metrics.paidWorkedMinutes,metrics.creditedSpanMinutes-60)
+  assert.equal(ctx.buildPayrollMealBreakReviewException({},date,[row]),null)
+ }
+})
+test('default meal is deducted once for duplicate/overnight logs; approved no-break stays authoritative',()=>{
+ const ctx=appContext()
+ const row=log('20:00','05:00',0,'20:00','05:00','2026-10-23')
+ const metrics=ctx.getAttendanceDayWorkMetrics([row,{...row,id:'b'}])
+ assert.equal(metrics.deductedBreakMinutes,60)
+ assert.equal(metrics.paidWorkedMinutes,480)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([row]),0)
+ const approved={...row,meal_break_exception_approved:true,approved_unpaid_break_minutes:0}
+ assert.equal(ctx.getAttendanceDayWorkMetrics([approved]).deductedBreakMinutes,0)
+ assert.equal(ctx.getAttendanceDayWorkMetrics([approved]).paidWorkedMinutes,540)
+ // Scheduled end still caps OT even after an approved no-break exception.
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([approved]),0)
 })

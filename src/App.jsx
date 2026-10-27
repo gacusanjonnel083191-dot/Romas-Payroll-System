@@ -1461,20 +1461,20 @@ function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = ''
  })
  const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, resolvedBreakRowsByLogId)
  const breakEvidence = getAttendanceBreakPunchEvidence({ breakRowsByLogId:resolvedBreakRowsByLogId, metrics })
- const newPolicy = usesShortShiftMealPolicy(attendanceDate)
+ // Current shifts use the default meal deduction even without a break punch.
+ // Keep legacy review holds for dates before the short-shift policy only.
  const isShortScheduledDay = metrics.rawSpanMinutes > 0
   && metrics.rawSpanMinutes < REQUIRED_PAID_WORK_MINUTES + ALLOWED_BREAK_MINUTES
- const requiresReview = !metrics.breakOverrideApplied
-  && (newPolicy ? !breakEvidence.hasCompletedBreakPunch && metrics.recordedBreakMinutes === 0 : !breakEvidence.hasBreakEvidence)
-  && (newPolicy ? metrics.rawSpanMinutes > SHORT_SHIFT_MAX_MINUTES : isShortScheduledDay && metrics.undertimeMinutes > 0)
+ const requiresReview = !usesShortShiftMealPolicy(attendanceDate)
+  && !metrics.breakOverrideApplied
+  && !breakEvidence.hasBreakEvidence
+  && isShortScheduledDay && metrics.undertimeMinutes > 0
  if (!requiresReview) return null
 
  return buildPayrollAttendanceException(employee, attendanceDate, dayLogs, {
   ...integrity,
   code:'meal_break_review',
-  message:newPolicy
-   ? 'More than five hours were worked with no break punch. Review the employee explanation: approve a verified continuous shift or correct the missing break punch before payroll.'
-   : 'No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.'
+  message:'No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.'
  })
 }
 
@@ -20333,7 +20333,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
      message = 'No Meal Break filing is blocked because OT is already approved for this attendance shift. Ask the admin to undo that OT approval first, then file the break exception so all minutes can be recalculated in the correct order.'
     } else {
      canSubmit = true
-     message = `No break was recorded on this longer shift. Payroll is held for review. If continuous work is approved, paid work is ${revisedMetrics.paidWorkedMinutes} minute(s), with ${revisedOTMinutes} OT and ${revisedUTMinutes} UT minute(s). If a meal break was taken, correct the missing break punch instead.`
+     message = `No break was recorded on this longer shift. The standard 60-minute meal deduction applies without blocking payroll. If continuous work is approved, paid work is ${revisedMetrics.paidWorkedMinutes} minute(s), with ${revisedOTMinutes} OT and ${revisedUTMinutes} UT minute(s). If a meal break was taken, correct the missing break punch instead.`
     }
    }
   } else if (activeMealBreakRequests.some(row => row.status === 'pending')) {
@@ -30973,8 +30973,8 @@ async function computePayroll() {
    .map(([dateKey, dayLogs]) => buildPayrollMealBreakReviewException(emp, dateKey, dayLogs, breakRowsByLogId))
    .filter(Boolean)
   if (mealBreakReviewIssues.length > 0) {
-   // Do not create a payslip that may silently deduct a meal break which was
-   // never taken. The DTR must first record the break or approve No Meal Break.
+   // Only legacy meal-review holds remain. Current completed shifts use the
+   // default meal deduction and are not held for a missing break punch.
    continue
   }
 
@@ -38949,7 +38949,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <h2 style={h2s}>Overtime / Meal-Break Exceptions</h2>
  <div style={{ background:'linear-gradient(135deg,#fff8dc,#fffdf4)', border:'2px solid #FDD412', borderLeft:'6px solid #ca1b1b', borderRadius:'14px', padding:'14px', margin:'0 0 14px', width:'100%', boxSizing:'border-box', boxShadow:'0 4px 14px rgba(253,212,18,0.12)' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
-  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>From October 11, shifts of five hours or less with no break punch have no meal deduction. Longer unpunched shifts require a supervisor or owner review before payroll: approve verified continuous work or correct the missing break punch. Undertime remains separate and automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
+  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>From October 11, shifts of five hours or less with no break punch have no meal deduction. Longer unpunched shifts use the standard 60-minute meal deduction without blocking payroll. Approved No Meal Break exceptions still apply. Undertime remains separate and automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
 
  <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.20)', borderTop:'5px solid #ca1b1b', borderRadius:'16px', padding:'16px', margin:'0 0 16px', width:'100%', boxShadow:'0 5px 18px rgba(26,26,46,0.07)', boxSizing:'border-box' }}>
@@ -38994,7 +38994,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ border:'1px solid #dbe9f8', borderRadius:'12px', overflow:'hidden' }}>
  <div style={{ background:'#eef6ff', color:'#1f5f99', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Automatic Undertime Policy</div>
  <div style={{ padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.6 }}>
-  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically. From October 11, 2026, a shift of up to five hours with no break has zero meal deduction. Longer shifts without a break punch require review before payroll. OT remains approval-driven.
+  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically. From October 11, 2026, a shift of up to five hours with no break has zero meal deduction. Longer shifts without a break punch use the standard 60-minute meal deduction without blocking payroll. OT remains approval-driven.
  </div>
  </div>
  </div>
@@ -39170,7 +39170,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  {!isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && (
   <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #FDD412', background:'#fff8dc', borderRadius:'9px', color:'#1a1a2e', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
-   No break punch is recorded. For shifts longer than five hours from October 11, review the employee's explanation and resolve the meal break before payroll. For a forgotten break punch, correct the DTR.
+   No break punch is recorded. From October 11, shifts longer than five hours use the standard 60-minute meal deduction without blocking payroll. If continuous work is verified, review a No Meal Break exception; for a forgotten break punch, correct the DTR.
   </div>
  )}
   <p style={{ margin:'10px 0 0', color:approvalBlocked?'#ca1b1b':'#2d8a4e', fontWeight:'800', fontSize:'12px', lineHeight:1.5 }}>{adminValidation?.message || 'Attendance calculation is loading. The system will revalidate before saving.'}</p>
@@ -50376,7 +50376,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
  <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File Overtime</h3>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
-  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 11, 2026, shifts up to five hours with no break punch have zero meal deduction. Longer unpunched shifts require a supervisor or owner review before payroll. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
+  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 11, 2026, shifts up to five hours with no break punch have zero meal deduction. Longer unpunched shifts use the standard 60-minute meal deduction without blocking payroll. Approved No Meal Break exceptions still apply. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
  <label style={lblS}>Attendance Date Being Filed:</label>
  <input

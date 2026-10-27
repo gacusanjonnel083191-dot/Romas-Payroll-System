@@ -68,7 +68,7 @@ test('unrelated modules are unchanged', () => {
  assert.equal(enforcePayrollMealBreakExemptions(fixture, '/repo/src/Other.jsx'), fixture)
 })
 
-test('cutoff review holds longer unpunched shifts, but releases short and approved shifts', () => {
+test('cutoff review allows current unpunched shifts and preserves legacy review', () => {
  const app=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
  const start=app.indexOf('function buildPayrollMealBreakReviewException(')
  const end=app.indexOf('\nfunction ',start+1)
@@ -81,7 +81,8 @@ test('cutoff review holds longer unpunched shifts, but releases short and approv
  vm.runInContext(app.slice(start,end),ctx)
  const issue=metrics=>ctx.buildPayrollMealBreakReviewException({},'2026-10-18',[{id:1,metrics}])
  assert.equal(issue({rawSpanMinutes:300,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:240}),null)
- assert.equal(issue({rawSpanMinutes:301,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:180}).code,'meal_break_review')
- assert.equal(issue({rawSpanMinutes:540,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:0}).code,'meal_break_review')
+ assert.equal(issue({rawSpanMinutes:301,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:180}),null)
+ assert.equal(issue({rawSpanMinutes:540,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:0}),null)
  assert.equal(issue({rawSpanMinutes:540,breakOverrideApplied:true,recordedBreakMinutes:0,undertimeMinutes:0}),null)
+ assert.equal(ctx.buildPayrollMealBreakReviewException({},'2026-10-05',[{id:1,metrics:{rawSpanMinutes:400,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:140}}]).code,'meal_break_review')
 })

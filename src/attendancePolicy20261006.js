@@ -36,8 +36,9 @@ export function policyBreakMinutes({date = '', spanMinutes = 0, recordedMinutes 
  if (usesShortShiftMealPolicy(date)) {
   if (span <= SHORT_SHIFT_MAX_MINUTES) return Math.min(span, recorded)
   if (legacyOverride !== null) return Math.min(span, Math.max(0, Number(legacyOverride) || 0))
-  // An unpunched longer shift is held for review before payroll is computed.
-  return Math.min(span, recorded > 0 ? Math.max(60, recorded) : 0)
+  // Use the standard unpaid meal hour when a longer shift has no break punch.
+  // Approved exceptions above and recorded overbreak remain authoritative.
+  return Math.min(span, Math.max(60, recorded))
  }
  const standard = !usesOvertimeThresholdPolicy(date) && usesMinuteAttendancePolicy(date) && span < 540 ? recorded : Math.max(60, recorded)
  return Math.min(span, !usesMinuteAttendancePolicy(date) && legacyOverride !== null ? Math.max(0, Number(legacyOverride) || 0) : standard)
