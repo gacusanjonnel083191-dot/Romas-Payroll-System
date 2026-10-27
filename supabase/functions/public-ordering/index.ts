@@ -1,6 +1,7 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
+import {readLimitedBody} from './request-body.mjs'
 import {
   cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
   validPhone, validRequestId,
@@ -253,13 +254,14 @@ Deno.serve(async request => {
   if (origin && !allowed.includes(origin)) return response(origin, 403, {ok:false, message:'Origin not allowed.'})
   if (request.method === 'OPTIONS') return new Response(null, {status:204, headers:headers(origin)})
   if (request.method !== 'POST') return response(origin, 405, {ok:false, message:'Method not allowed.'})
-  if (Number(request.headers.get('content-length') || 0) > MAX_BODY_BYTES) return response(origin, 413, {ok:false, message:'Request too large.'})
   const url = Deno.env.get('SUPABASE_URL') || ''
   const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
   if (!url || !key) return response(origin, 503, {ok:false, message:'Ordering service is not configured.'})
   const admin = createClient<any>(url, key, {auth:{persistSession:false, autoRefreshToken:false}})
-  const text = await request.text().catch(() => '')
-  if (text.length > MAX_BODY_BYTES) return response(origin, 413, {ok:false, message:'Request too large.'})
+  let text: string | null
+  try { text = await readLimitedBody(request, MAX_BODY_BYTES) }
+  catch { return response(origin, 400, {ok:false, message:'Request body could not be read.'}) }
+  if (text === null) return response(origin, 413, {ok:false, message:'Request too large.'})
   let body: Body
   try { body = JSON.parse(text) }
   catch { return response(origin, 400, {ok:false, message:'Invalid JSON.'}) }

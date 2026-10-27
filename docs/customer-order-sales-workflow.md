@@ -74,8 +74,8 @@ not create a reseller invoice from an online order.
 The weather and route guard below the production baseline still plans
 reseller deliveries only. Pickup orders are represented in the variant
 production baseline, not in reseller dispatch routes. Staff should avoid
-manually duplicating a website order on a reseller invoice. This forecast
-Edge Function forecast action is deployed to staging as version 10. The main
+manually duplicating a website order on a reseller invoice. The forecast
+Edge Function action remains available in staging version 11. The main
 app UI is still local and has not been pushed or deployed. The anonymous
 forecast request returned HTTP 403 in staging. A signed-in staging staff
 request for 26 October 2026 returned zero orders and zero items, matching the
