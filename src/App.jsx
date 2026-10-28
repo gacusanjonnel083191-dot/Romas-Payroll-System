@@ -15473,7 +15473,7 @@ function buildDeliveryInvoicePrintCSS() {
     'background:#1A1A2E!important;color:#ffffff!important;border-color:#1A1A2E!important;}',
 
     '.product-row td { height: 0.190in !important; font-size: 12px !important; }',
-    '.product-name { text-align: center !important; font-weight: 600 !important; }',
+    '.invoice-table .product-name { text-align: center !important; font-weight: 600 !important; white-space: normal !important; overflow-wrap: anywhere !important; line-height: 1.1 !important; }',
     '.number-cell { text-align: center !important; font-weight: 500 !important; }',
     '.money-cell { text-align: right !important; font-weight: 500 !important; }',
 
@@ -15600,9 +15600,10 @@ function buildDeliveryInvoicePrintCSS() {
       const price = first ? getPrice(first) : 0;
       const amount = matched.reduce((sum, item) => sum + getAmount(item), 0);
       const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0);
+      const productLabel = seasonalBoxFor(row.label)?.name || row.label;
 
       return `<tr class="product-row">
-        <td class="product-name">${escapeHtml(row.label)}</td>
+        <td class="product-name">${escapeHtml(productLabel)}</td>
         <td class="number-cell">${qty ? qty.toLocaleString('en-PH') : ''}</td>
         <td class="money-cell">${price ? peso(price) : ''}</td>
         <td class="money-cell">${amount ? peso(amount) : ''}</td>
@@ -16287,6 +16288,8 @@ function buildDeliveryInvoicePrintCSS() {
      frameDocument.write(`<!doctype html><html><head><meta charset="utf-8">${buildDeliveryInvoicePrintCSS()}<style>
        html,body{width:${DELIVERY_INVOICE_SOURCE_WIDTH_MM}mm!important;min-height:${DELIVERY_INVOICE_SOURCE_HEIGHT_MM}mm!important;height:auto!important;overflow:visible!important;background:#fff!important;}
        .invoice-page{width:${DELIVERY_INVOICE_SOURCE_WIDTH_MM}mm!important;min-height:${DELIVERY_INVOICE_SOURCE_HEIGHT_MM}mm!important;height:auto!important;margin:0!important;overflow:visible!important;background:#fff!important;}
+       html,body{display:block!important;margin:0!important;padding:0!important;}
+       .invoice-table{height:auto!important;}
        .title-row td{justify-content:center!important;text-align:center!important;}
        .title-row img,.invoice-logo,img[alt*="logo" i]{display:none!important;}
      </style></head><body>${buildDeliveryInvoicePrintPage(invoice)}</body></html>`)
