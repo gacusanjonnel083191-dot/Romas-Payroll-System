@@ -45782,7 +45782,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}> Production Forecast</h3>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{ONLINE_FORECAST_ENABLED?'Active reseller invoices and accepted online orders scheduled for this date. Pending, declined, and cancelled online orders are excluded. Assorted boxes remain unallocated by flavor.':'Active reseller invoices for this date. Online ordering is not connected in this environment.'} Invoices with pending deletion requests are excluded immediately.</p>
+ <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{ONLINE_FORECAST_ENABLED?'Active delivery invoices, SAGS transfers, and accepted online orders scheduled for this date. Pending, declined, and cancelled online orders are excluded. Assorted boxes remain unallocated by flavor.':'Active delivery invoices and SAGS transfers for this date. Online ordering is not connected in this environment.'} Invoices with pending deletion requests are excluded immediately.</p>
  </div>
  <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', flexWrap:'wrap' }}>
  <div>
@@ -45806,7 +45806,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  </div>
  {ONLINE_FORECAST_ENABLED && !onlineForecastReady && <div role="alert" style={{ background:'#fff3e0', border:'1px solid #df8c20', borderRadius:'8px', padding:'9px', marginBottom:'10px', color:'#6b3b00', fontSize:'12px' }}>{onlineForecast.status==='error' ? `Online orders could not be verified: ${onlineForecast.error}` : 'Loading accepted online orders. Printing is paused until the count is verified.'}</div>}
- {ONLINE_FORECAST_ENABLED && onlineForecastReady && <div style={{ fontSize:'11px', fontWeight:'bold', marginBottom:'10px', color:'#555' }}>Source totals: reseller invoices {invoicePieces.toLocaleString('en-PH')} pcs · accepted online orders {onlinePieces.toLocaleString('en-PH')} pcs. Do not also enter website orders as reseller invoices.</div>}
+ {ONLINE_FORECAST_ENABLED && onlineForecastReady && <div style={{ fontSize:'11px', fontWeight:'bold', marginBottom:'10px', color:'#555' }}>Source totals: delivery records {invoicePieces.toLocaleString('en-PH')} pcs · accepted online orders {onlinePieces.toLocaleString('en-PH')} pcs. Do not also enter website orders as reseller invoices.</div>}
  {forecastExcludedInvoices.length > 0 && (
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'9px', padding:'9px 11px', marginBottom:'10px', color:'#7a4d00', fontSize:'11px', fontWeight:'800' }}>
  {forecastExcludedInvoices.length} invoice{forecastExcludedInvoices.length!==1?'s are':' is'} excluded from production because deletion approval is pending. If the owner rejects the request, the invoice will return to the forecast automatically.
