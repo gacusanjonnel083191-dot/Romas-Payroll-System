@@ -5,7 +5,7 @@ const url = import.meta.env.VITE_SUPABASE_URL || ''
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 const endpoint = url ? `${url.replace(/\/$/, '')}/functions/v1/public-ordering` : ''
 const supabase = url && key ? createClient(url, key, {
-  auth: {storage: window.sessionStorage, persistSession:true, autoRefreshToken:true},
+  auth: {persistSession:true, autoRefreshToken:true},
 }) : null
 const money = value => `₱${Number(value || 0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2})}`
 const when = value => value ? new Intl.DateTimeFormat('en-PH', {
@@ -16,17 +16,6 @@ const ACTIONS = {
   accepted:['preparing','cancelled'],
   preparing:['ready','cancelled'],
   ready:['out_for_delivery','cancelled'],
-}
-
-function signInMessage(error) {
-  if (error?.status === 429) return 'Too many sign-in attempts. Please wait and try again.'
-  if (error?.status === 400 && /invalid login credentials/i.test(error.message || '')) {
-    return 'The staging email or password does not match. Use your temporary staging password.'
-  }
-  if (/fetch|network/i.test(error?.message || '')) {
-    return 'Could not reach the staging sign-in service. Check your connection and try again.'
-  }
-  return `Sign-in failed: ${error?.message || 'unknown error'}`
 }
 
 async function call(action, payload = {}) {
@@ -44,35 +33,17 @@ async function call(action, payload = {}) {
   return result
 }
 
-function Login({onSignedIn}) {
-  const [email,setEmail] = useState('')
-  const [password,setPassword] = useState('')
-  const [error,setError] = useState('')
-  const [busy,setBusy] = useState(false)
-  async function submit(event) {
-    event.preventDefault()
-    if (!supabase || busy) return
-    setBusy(true);setError('')
-    const {error:signInError} = await supabase.auth.signInWithPassword({email,password})
-    setPassword('')
-    setBusy(false)
-    if (signInError) setError(signInMessage(signInError))
-    else onSignedIn()
-  }
+function Login() {
   return <main className="staff-login"><div className="staff-panel">
     <p className="staff-kicker">ROMA'S DONUTS</p><h1>Customer order queue</h1>
-    <p>Sign in with your authorized business account.</p>
-    <form onSubmit={submit}>
-      <label>Email<input type="email" autoComplete="username" value={email} onChange={event=>setEmail(event.target.value)} required /></label>
-      <label>Password<input type="password" autoComplete="current-password" value={password} onChange={event=>setPassword(event.target.value)} required /></label>
-      {error && <p role="alert" className="staff-error">{error}</p>}
-      <button disabled={busy}>{busy?'Signing in…':'Sign in'}</button>
-    </form>
+    <p>Sign in to Roma’s main business system to use the same account here.</p>
+    <a href="/">Open main system sign-in</a>
   </div></main>
 }
 
 export default function StaffOrderQueue() {
   const [session,setSession] = useState(null)
+  const [accessLevel,setAccessLevel] = useState('view')
   const [orders,setOrders] = useState([])
   const [selectedId,setSelectedId] = useState('')
   const [detail,setDetail] = useState(null)
@@ -104,6 +75,7 @@ export default function StaffOrderQueue() {
     try {
       const result = await call('staff-list')
       setOrders(result.orders)
+      setAccessLevel(result.accessLevel)
       setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')
       setDetail(null)
@@ -117,7 +89,7 @@ export default function StaffOrderQueue() {
     if(!session)return undefined
     let active=true
     call('staff-list').then(result=>{
-      if(active){setOrders(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
@@ -207,12 +179,12 @@ export default function StaffOrderQueue() {
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
   </div></main>
-  if (!session) return <Login onSignedIn={()=>void refresh()} />
+  if (!session) return <Login />
 
   return <main className="staff-app">
-    <header><div><p className="staff-kicker">ROMA'S DONUTS · STAFF</p><h1>Customer orders</h1></div>
+    <header><div><p className="staff-kicker">ROMA'S DONUTS · STAFF</p><h1>Customer orders</h1><p>{accessLevel==='full'?'Full access':'View only'}</p></div>
       <div className="staff-header-actions"><button onClick={()=>void refresh()} disabled={loading}>Refresh</button>
-        <button onClick={()=>void supabase.auth.signOut()}>Sign out</button></div></header>
+        <a href="/">Main system</a><button onClick={()=>void supabase.auth.signOut()}>Sign out of main system</button></div></header>
     {error && <p role="alert" className="staff-error">{error}</p>}
     <div className="staff-layout">
       <section className="staff-panel staff-list" aria-label="Order queue">
@@ -230,7 +202,7 @@ export default function StaffOrderQueue() {
           <p><strong>{detail.customer_name}</strong> · {detail.customer_phone}</p>
           {detail.phone_verified_at
             ? <p className="staff-hint" role="status">Phone confirmed by staff call on {when(detail.phone_verified_at)}.</p>
-            : detail.status==='pending_confirmation'
+            : detail.status==='pending_confirmation' && accessLevel==='full'
               ? <form className="staff-payment" onSubmit={confirmPhoneByCall}>
                 <h3>Confirm customer by phone</h3>
                 <p className="staff-hint">Call {detail.customer_phone} and confirm the customer’s name, order, pickup location, and requested time before accepting.</p>
@@ -252,7 +224,7 @@ export default function StaffOrderQueue() {
           <div className="staff-row staff-total"><span>Total · {detail.payment_status}</span><strong>{money(detail.total)}</strong></div>
           {detail.paid_at && <p className="staff-hint">Payment recorded {when(detail.paid_at)}. This order is linked to one separate online sale.</p>}
           {detail.refunded_at && <p className="staff-hint">Full refund recorded {when(detail.refunded_at)}. The original sale remains in the ledger, with a separate reversing entry{detail.receipt?.refund?.id? ` (${detail.receipt.refund.id})` : ''}.</p>}
-          <h3>Review</h3>
+          {accessLevel==='full' && <><h3>Review</h3>
           <label>Review note<input value={statusNote} onChange={event=>setStatusNote(event.target.value)} maxLength={500} /></label>
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
             .filter(action=>(action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
@@ -278,14 +250,19 @@ export default function StaffOrderQueue() {
             <label>Refund reason<input value={refundReason} onChange={event=>setRefundReason(event.target.value)} minLength={10} maxLength={500} required /></label>
             <label className="staff-payment-confirm"><input type="checkbox" checked={refundConfirmed} onChange={event=>setRefundConfirmed(event.target.checked)} /> I verified that the full refund was issued to the customer.</label>
             <button disabled={busy||!refundConfirmed||refundReason.trim().length<10||refundMethod!=='Cash'&&!refundReference.trim()}>{busy?'Recording…':'Record full refund and reversal'}</button>
-          </form>}
+          </form>}</>}
+          <h3>Order history</h3>
+          <div className="staff-messages" aria-label="Order audit trail">{(detail.events||[]).map(event=><div key={event.id}>
+            <strong>{event.actor_name || (event.actor==='customer'?'Customer':'System')}</strong> <small>{when(event.created_at)}</small>
+            <p>{event.old_status && event.old_status!==event.new_status ? `${event.old_status.replaceAll('_',' ')} → ` : ''}{event.new_status.replaceAll('_',' ')}{event.note ? ` · ${event.note}` : ''}</p>
+          </div>)}</div>
           <h3>Order chat</h3>
           <div className="staff-messages">{detail.messages.map(item=><div key={item.id}>
             <strong>{item.sender==='staff'?'Roma’s team':'Customer'}</strong> <small>{when(item.created_at)}</small>
             <p>{item.body}</p>
           </div>)}</div>
-          <form className="staff-chat" onSubmit={sendMessage}><input aria-label="Reply to customer" value={message} onChange={event=>setMessage(event.target.value)} maxLength={500} required />
-            <button disabled={busy}>Send</button></form>
+          {accessLevel==='full' && <form className="staff-chat" onSubmit={sendMessage}><input aria-label="Reply to customer" value={message} onChange={event=>setMessage(event.target.value)} maxLength={500} required />
+            <button disabled={busy}>Send</button></form>}
         </>}
       </section>
     </div>
