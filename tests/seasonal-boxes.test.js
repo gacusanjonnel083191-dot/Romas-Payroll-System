@@ -58,14 +58,23 @@ test('all invoice print formats include ordered boxes without blank seasonal row
 test('main forecast expands selected invoices and internal transfers; production screen totals reconcile',()=>{
  const a=source.indexOf(' function getProductionForecastInvoices('),b=source.indexOf(' function openInvoiceDeletionCenter',a)
  const invoice={id:'sample',delivery_date:'2026-11-01',delivery_invoice_items:[...ordered,{variant_name:'Rings',variant_id:'ring-id',quantity:10}]}
- const ctx=vm.createContext({SEASONAL_BOXES,seasonalBoxFor,expandSeasonalProductionItems,seasonalPackingSummary,filterProductionForecastInvoices,sagsTransfersAsForecastDeliveries:()=>[],sagsTransfers:[],resellers:[],donutVariants:[...variants,...SEASONAL_BOXES.map(box=>({id:box.code,name:box.name}))],productionForecastExcludedInvoiceIds:[],deliveryInvoices:[invoice],forecastDate:'2026-11-01',safeNum:(n,d=0)=>Number.isFinite(Number(n))?Number(n):d,isInvoiceExcludedFromProductionForecast:()=>false,compareDonutVariantRowsByGuide:()=>0})
- vm.runInContext(source.slice(a,b),ctx)
  const x=source.indexOf(' const BITE_SIZE_DRY_PREMIX_GRAMS ='),y=source.indexOf(' const printForecast =',x)
- vm.runInContext(source.slice(x,y)+';this.result={rows:forecastRows,totalPieces,totalDryPremixG,seasonalPacking,smallDonutPieces}',ctx)
+ const runForecast=(onlineEnabled,onlineSummary)=>{
+  const ctx=vm.createContext({SEASONAL_BOXES,seasonalBoxFor,expandSeasonalProductionItems,seasonalPackingSummary,filterProductionForecastInvoices,sagsTransfersAsForecastDeliveries:()=>[],sagsTransfers:[],resellers:[],donutVariants:[...variants,...SEASONAL_BOXES.map(box=>({id:box.code,name:box.name}))],productionForecastExcludedInvoiceIds:[],deliveryInvoices:[invoice],forecastDate:'2026-11-01',safeNum:(n,d=0)=>Number.isFinite(Number(n))?Number(n):d,isInvoiceExcludedFromProductionForecast:()=>false,compareDonutVariantRowsByGuide:()=>0,ONLINE_FORECAST_ENABLED:onlineEnabled,onlineForecast:{status:'ready',date:'2026-11-01',summary:onlineSummary}})
+  vm.runInContext(source.slice(a,b),ctx)
+  vm.runInContext(source.slice(x,y)+';this.result={rows:forecastRows,totalPieces,totalDryPremixG,seasonalPacking,smallDonutPieces,onlinePieces}',ctx)
+  return ctx.result
+ }
+ const ctx={result:runForecast(false,null)}
  assert.equal(ctx.result.totalPieces,34)
  assert.equal(ctx.result.totalDryPremixG,918)
  assert.equal(ctx.result.rows.find(row=>row.variant_name==='Shells').total,11)
  assert.equal(ctx.result.rows.find(row=>row.variant_name==='Rings').total,23)
  assert.equal(ctx.result.seasonalPacking.reduce((s,row)=>s+row.totalPieces,0),24)
  assert(!ctx.result.rows.some(row=>seasonalBoxFor(row)))
+ const withOnline=runForecast(true,{orderCount:1,totalPieces:6,piecesByVariant:{Shells:6}})
+ assert.equal(withOnline.totalPieces,40)
+ assert.equal(withOnline.onlinePieces,6)
+ assert.equal(withOnline.rows.find(row=>row.variant_name==='Shells').total,17)
+ assert.equal(withOnline.seasonalPacking.reduce((s,row)=>s+row.totalPieces,0),24)
 })

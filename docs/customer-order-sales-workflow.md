@@ -1,0 +1,132 @@
+# Customer order sales workflow
+
+An online pickup request is not revenue. After staff accepts it and confirms
+receipt of the full amount, the staff queue records one separate online sale.
+It does not create an outlet POS receipt or a reseller receivable.
+
+The customer-facing My orders page uses the order code as an unpaid order
+reference. After staff records full payment, it offers a printable customer
+payment receipt with the server-recorded items, total, paid time, and pickup
+details. The Edge Function checks the linked active online sale and returns
+its sale ID, amount, payment method, and digital reference to the holder of
+the private order token. It refuses to print when there is no matching sale,
+the payment status is unpaid, or the item totals do not match. This receipt does not create or change a
+reseller invoice. The receipt UI is local only and has not been deployed.
+
+The payment screen supports cash, GCash, Maya, bank transfer, and QR PH. Staff
+must enter a transaction reference for digital payments. The sale uses the
+order's server-calculated total and the date of confirmation in Asia/Manila;
+staff cannot edit the sale amount in the ordering queue.
+
+`customer_record_paid_sale` updates the order and inserts its linked row in
+`daily_sales_online_payments` in one database transaction. A unique order link
+and row lock make retries idempotent. A unique digital reference protects
+against posting the same transfer to two customer orders. Linked sales cannot
+be edited through the main app's general online-payment form. The ledger row
+is marked `count_as_revenue = true`, appears under the `Website Order` source,
+and is included in the existing online revenue reports.
+
+Staff cannot cancel a paid order through the ordinary cancellation action.
+The local full-refund workflow requires ordering staff to confirm that the
+money was already returned, choose the refund method, provide a digital
+transaction reference when applicable, and record a reason. It does not
+transfer money. One database transaction preserves the original paid sale,
+adds a linked negative revenue entry dated in Asia/Manila, marks the order
+refunded, and cancels an unfulfilled order. A completed order stays completed
+so its fulfillment history remains intact. The unique reversal link and
+order lock prevent duplicate refunds. The customer sees a separate refund
+confirmation rather than a still-paid receipt. The main online-sales ledger
+labels reversal rows and nets their negative amount into the refund date's
+revenue. Staff must still reconcile cash returned at pickup with that
+location's cash handover.
+
+Refund migration `20261026004529_customer_order_refunds.sql` and the updated
+`public-ordering` function (staging version 11) are applied to the separate
+staging project. A synthetic transaction verified the reversal, retry
+protection, cancellation, and zero net revenue, then rolled back. A separate
+staff-page test recorded the full refund for `TEST-ONLY-REFUND-20261026` and
+confirmed the same result. Cleanup of that one synthetic order, its item,
+two events, and two linked ledger rows was declined by the Supabase SQL tool;
+the cancelled/refunded sample remains in staging with zero net revenue.
+The customer confirmation and main-app refund labels remain local. None of
+this refund work has been applied to production, GitHub, or Vercel.
+
+The migration and Edge Function were tested in the separate staging project.
+Customer submissions remain disabled. Neither the migration nor the function
+has been applied to production; GitHub and Vercel have not been updated.
+
+## Production forecast connection (local implementation)
+
+When `VITE_PUBLIC_ORDERING_ENABLED=true`, the main app asks the authenticated
+`public-ordering` Edge Function for orders scheduled on the selected Manila
+production date. The function returns only accepted, preparing, ready,
+out-for-delivery, and completed orders, plus item snapshots; it does not return
+customer contact details. The main app adds `quantity × pieces_per_unit` to
+the existing reseller invoice quantities. Assorted Rings and Assorted
+Circlets are shown as separate **unallocated** piece lines rather than
+assigned to a flavor. Their existing base-dough premix rates are 27 g and
+11.7 g per piece, respectively. The screen shows invoice and online source
+counts separately and blocks printing when the online count cannot be
+verified. Print rechecks the current online quantities; if they changed,
+staff must review the updated forecast before printing. The connection does
+not create a reseller invoice from an online order.
+
+The weather and route guard below the production baseline still plans
+reseller deliveries only. Pickup orders are represented in the variant
+production baseline, not in reseller dispatch routes. Staff should avoid
+manually duplicating a website order on a reseller invoice. The forecast
+Edge Function action remains available in staging version 13. The main
+app UI is still local and has not been pushed or deployed. The anonymous
+forecast request returned HTTP 403 in staging. A signed-in staging staff
+request for 26 October 2026 returned zero orders and zero items, matching the
+empty staging database. A labeled, unpaid accepted staging order with one
+six-piece Assorted Rings box and one 30-piece Choco Balls box then returned
+one order, two items, and 36 pieces. Its unit prices were ₱150 and ₱180,
+giving a ₱330 subtotal; this was never recorded as a sale. The exact test
+order and its two items were removed, and the same staff action returned zero
+orders and zero pieces again. The temporary test control was removed from
+the staff page. Production customer ordering remains disabled.
+
+## Public request safeguards (staging)
+
+The Edge Function reads request bodies with a 32 KB byte cap before parsing
+JSON, even when a client omits `Content-Length`. Migration
+`20261027122644_customer_order_public_rate_limits.sql` adds an atomic,
+server-only counter. The Edge Function limits new submissions to 20 attempts
+per hour per normalized phone number and customer chat to 20 messages per
+10 minutes per order. It hashes each counter key with a server secret, stores
+no phone numbers or receipt tokens in the counter table, and rejects writes
+if the counter is unavailable. Anonymous database roles cannot read the
+counter or invoke its function. The migration and Edge Function version 14
+are deployed only to the separate staging project. A rolled-back staging
+database test allowed two attempts and blocked the third, leaving zero
+counter rows. Staging returned HTTP 503 for a disabled order submission and
+HTTP 413 for an oversized request. Production remains unchanged.
+The checkout asks for a mobile number that staff can call. Orders are saved
+as pending confirmation. Migration
+`20261027132531_customer_order_staff_phone_confirmation.sql` records the
+confirming staff member and time, adds an audit event, and prevents acceptance
+until the call is recorded. The staff queue asks the team member to confirm
+the customer's name, order, pickup location, and requested time by phone.
+The migration and Edge Function version 14 are deployed only to staging. A
+rolled-back staging test confirmed that acceptance is blocked before the call,
+allowed after it, and that a duplicate confirmation is rejected. On 28 October
+2026, a browser test submitted one clearly labeled synthetic six-piece Shells
+pickup request for the next day. The staff queue disabled acceptance until a
+simulated phone confirmation was recorded; acceptance then succeeded. No real
+call or payment took place. The order was cancelled and its one item and four
+events were removed; the older refund sample was left untouched. The public
+staging configuration was verified afterward with `orderingEnabled: false`,
+four pickup locations, and `phoneVerificationMethod: 'staff_call'`. No SMS
+provider is needed for this workflow. A real customer submission and staff
+call have not yet been tested. Production, GitHub, and Vercel remain unchanged.
+Staff calls confirm the request but do not prove ownership of the phone number
+automatically; review abuse and impersonation controls before public launch.
+
+The next release gate is a production migration and deployment review. A
+read-only check on 28 October 2026 found no `customer_orders` or
+`customer_order_rate_limits` tables in the production project. Its existing
+`daily_sales_online_payments` table has the base columns expected by the
+customer-order payment migration. The standard `npm run build` completed and
+all 30 targeted ordering tests passed locally. These checks do not authorize
+or substitute for a production migration, deployment, backup, or a live order.
