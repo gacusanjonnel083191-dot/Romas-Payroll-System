@@ -51554,6 +51554,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px' }}>Contact Roma's Donuts admin for your access code</p>
  </form>
  )}
+ {ONLINE_FORECAST_ENABLED && <a href="/customer-ordering-preview/" style={{ display:'block', marginTop:'18px', padding:'12px', borderRadius:'12px', background:'#fff8e2', color:'#8b1717', fontSize:'13px', fontWeight:'700', textAlign:'center', textDecoration:'none', border:'1px solid #f3d68c' }}>View customer ordering menu →</a>}
  <p style={{ color:'#ccc', fontSize:'11px', textAlign:'center', marginTop:'20px' }}>Roma's Donuts {new Date().getFullYear()}</p>
  </div>
  </div>
