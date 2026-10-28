@@ -10,7 +10,7 @@
 .product-bottom .price small{font-size:11px;color:#9c7565;font-weight:700}
 .qty-editor{display:flex;align-items:center;gap:6px;margin-top:11px}
 .qty-editor button{width:38px;height:38px;border-radius:9px;border:1px solid #ead4c4;background:#fff4e7;color:#941d20;font-size:22px;font-weight:800}
-.qty-editor input{width:100%;min-width:0;text-align:center;border:1px solid #e5d3c1;border-radius:9px;height:38px;color:#5d2423;font-weight:800}
+.qty-editor input{width:100%;min-width:0;text-align:center;border:1px solid #e5d3c1;border-radius:9px;height:38px;color:#5d2423;font-weight:800;appearance:textfield;-moz-appearance:textfield}
 .qty-editor input::-webkit-outer-spin-button,.qty-editor input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .line-total{font-size:11px;color:#8d6d5f;margin-top:7px;text-align:right}
 .line-total strong{color:#8c191d}
