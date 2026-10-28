@@ -11,6 +11,8 @@ import {
  isInvoiceExcludedFromProductionForecastPolicy
 } from './productionForecastPolicy.js'
 import {summarizeAcceptedOnlineOrders} from './customerOrderForecast.js'
+import StaffOrderQueue from './customerOrders/StaffOrderQueue.jsx'
+import './customerOrders/embedded.css'
 import { Component, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
@@ -20682,6 +20684,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  // Admin Functions 
 function canAccess(tab) {
 const role = normalizeAdminRole(adminRole)
+if (tab === 'customerOrders') return ONLINE_FORECAST_ENABLED && !!role
 if (tab === 'returnsMonitor' && canViewSherylReturns) return true
 if (tab === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) return true
 if (role === 'owner') return true
@@ -35448,6 +35451,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  { key:'sales', icon:'\uD83D\uDCC8', label:'Sales & Expenses',
  tabs:[{key:'sales',label:'Sales & Expenses'}],
  roles:['owner','manager','hr'] },
+ { key:'customerOrders', icon:'🛍️', label:'Customer Orders',
+ tabs:[{key:'customerOrders',label:'Customer Orders'}],
+ roles:['owner','manager','admin','pos_admin','hr','payroll','supervisor','asst_supervisor'] },
  { key:'analytics', icon:'\uD83D\uDCCA', label:'Analytics',
  tabs:[{key:'analytics',label:'Analytics'}],
  roles:['owner'] },
@@ -35465,7 +35471,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  tabs:[{key:'franchise',label:'Franchise'}],
  roles:['owner'] },
  ]
- const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner') || (s.key === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) || (s.key === 'returnsMonitor' && canViewSherylReturns))
+ const visibleSections = SECTIONS.filter(s => (s.key !== 'customerOrders' || ONLINE_FORECAST_ENABLED) && (s.roles.includes(adminRole||'owner') || (s.key === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) || (s.key === 'returnsMonitor' && canViewSherylReturns)))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
  const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
  const adminDataDenseTabs = new Set(['posMonitor','tomorrowForecast','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
@@ -37422,11 +37428,6 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </button>
  )
  }) }
- {ONLINE_FORECAST_ENABLED && adminRole && (
- <a href="/public-ordering-staff.html" target="_blank" rel="noopener noreferrer" aria-label="Open customer order queue in a new tab" style={{ padding:'10px 12px', borderRadius:'8px', color:'rgba(255,255,255,0.65)', textDecoration:'none', display:'flex', alignItems:'center', gap:'10px' }}>
- <span style={{ fontSize:'16px', flexShrink:0 }}>🛍️</span><span style={{ fontSize:'12px', fontWeight:'500' }}>Customer Orders ↗</span>
- </a>
- )}
  </div>
  {/* Bottom Actions */}
  <div style={{ padding:'10px 10px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', display:'flex', flexDirection:'column', gap:'4px' }}>
@@ -37476,6 +37477,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
+ {activeTab==='customerOrders' && ONLINE_FORECAST_ENABLED && <div className="customer-order-module"><StaffOrderQueue client={supabase} serviceUrl={supabaseUrl} publishableKey={supabaseKey} embedded /></div>}
  {activeTab==='cartLoans' && isOwnerRole && <RollingCartLoans supabase={supabase} today={today} />}
 
  {/* DASHBOARD */}
