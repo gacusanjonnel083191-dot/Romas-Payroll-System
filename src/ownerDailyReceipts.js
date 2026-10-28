@@ -1,3 +1,4 @@
+import { posClosingReceipts } from './posClosingSummary.js'
 const cents = value => {
   const n = Number(value)
   return Number.isFinite(n) ? Math.round(n * 100) : 0
@@ -28,7 +29,7 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   const sales = data.daily_sales || []
   const online = data.daily_online || []
   const reseller = data.reseller_payments || []
-  const pos = data.pos_closings || []
+  const pos = posClosingReceipts(data.pos_closings || [])
   const remittances = data.outlet_remittances || []
   const invoices = data.invoices || []
   const receipts = []

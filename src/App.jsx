@@ -1,6 +1,8 @@
+import { SEASONAL_BOXES, seasonalBoxFor, assertWholeSeasonalBoxes, physicalDonutQuantity, expandSeasonalProductionItems, seasonalPackingSummary } from './seasonalBoxPolicy.js'
+import { dailyPosClosing } from './posClosingSummary.js'
 import StaffScheduler from './StaffScheduler.jsx'
 import EmployeeSchedule from './EmployeeSchedule.jsx'
-import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
+import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, usesShortShiftMealPolicy, SHORT_SHIFT_MAX_MINUTES, creditedAttendanceStartMinute, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
 import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
@@ -9,7 +11,7 @@ import {
  isInvoiceExcludedFromProductionForecastPolicy
 } from './productionForecastPolicy.js'
 import {summarizeAcceptedOnlineOrders} from './customerOrderForecast.js'
-import { Component, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
@@ -17,6 +19,9 @@ import ResellerCalculator from './ResellerCalculator.jsx'
 import { getResellerPaymentParts, getResellerPaymentTotal } from './resellerPaymentSplit.js'
 import OutletPerformance from './OutletPerformance.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
+import RollingCartLoans from './RollingCartLoans.jsx'
+import SagsInternalTransfers from './SagsInternalTransfers.jsx'
+import { isSagsTransferSchemaMissing, sagsTransfersAsForecastDeliveries } from './sagsTransferForecast.js'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
 import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
@@ -1183,9 +1188,11 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const excludedEarlyMinutes = Math.max(0, rawSpanMinutes - creditedSpanMinutes)
  const creditedTimeIn = clockMinuteToTimeValue(creditedStartMinute)
  let recordedBreakMinutes = 0
+ let hasCompletedBreakPunch = false
  const countedFallbackBreaks = new Set()
  completedLogs.forEach(log => {
-  const rows = breakRowsByLogId?.[String(log.id || '')] || []
+  const rows = breakRowsByLogId?.[String(log.id || '')] || log?._breakRows || []
+  if (rows.some(row => row?.break_out && row?.break_in)) hasCompletedBreakPunch = true
   if (rows.length > 0) {
    recordedBreakMinutes += getRecordedBreakMinutes(log, rows)
    return
@@ -1197,18 +1204,21 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
    recordedBreakMinutes += fallbackBreak
   }
  })
+ const policyRecordedBreakMinutes = usesShortShiftMealPolicy(attendanceDate) && hasCompletedBreakPunch
+  ? Math.max(1, recordedBreakMinutes)
+  : recordedBreakMinutes
 
  // Default company rule remains unchanged: every completed workday carries at
  // least one unpaid 60-minute meal break. Only an approved No Meal Break filing
  // may override the unpaid deduction. Pending or rejected requests do nothing.
- const defaultDeductedBreakMinutes = creditedSpanMinutes > 0 ? Math.max(ALLOWED_BREAK_MINUTES, recordedBreakMinutes) : 0
+ const defaultDeductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:policyRecordedBreakMinutes })
  const savedApprovedOverride = getApprovedMealBreakOverrideMinutes(completedLogs)
  const hasExplicitOverride = explicitApprovedUnpaidBreakMinutes !== undefined && explicitApprovedUnpaidBreakMinutes !== null
  const approvedUnpaidBreakMinutes = hasExplicitOverride
   ? Math.max(0, Math.min(ALLOWED_BREAK_MINUTES, Math.round(safeNum(explicitApprovedUnpaidBreakMinutes, 0))))
   : savedApprovedOverride
- const breakOverrideApplied = !currentPolicy && approvedUnpaidBreakMinutes !== null
- const deductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:recordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
+ const breakOverrideApplied = (!currentPolicy || usesShortShiftMealPolicy(attendanceDate)) && approvedUnpaidBreakMinutes !== null
+ const deductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:policyRecordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
  const overbreakMinutes = Math.max(0, Math.round(recordedBreakMinutes - ALLOWED_BREAK_MINUTES))
  const paidWorkedMinutes = Math.max(0, Math.round(creditedSpanMinutes - deductedBreakMinutes))
  // With no assigned start, the next-hour fallback protects OT from unapproved
@@ -1217,7 +1227,7 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const undertimeSpanMinutes = earlyStartPolicy && !scheduleStart ? rawSpanMinutes : creditedSpanMinutes
  const undertimeDeductedBreakMinutes = undertimeSpanMinutes === creditedSpanMinutes
   ? deductedBreakMinutes
-  : policyBreakMinutes({ date:attendanceDate, spanMinutes:undertimeSpanMinutes, recordedMinutes:recordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
+  : policyBreakMinutes({ date:attendanceDate, spanMinutes:undertimeSpanMinutes, recordedMinutes:policyRecordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
  const undertimePaidWorkedMinutes = Math.max(0, Math.round(undertimeSpanMinutes - undertimeDeductedBreakMinutes))
  const rawPaidWorkShortageMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - undertimePaidWorkedMinutes)
  const scheduleMetrics = getScheduleAnchoredAttendanceMetrics(completedLogs)
@@ -1253,7 +1263,7 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const { mealBreakScheduleCreditMinutes, chargeableEarlyOutMinutes } = getChargeableEarlyOutMinutes({
   earlyOutMinutes:scheduleMetrics.earlyOutMinutes,
   deductedBreakMinutes,
-  breakOverrideApplied:breakOverrideApplied || (currentPolicy && rawSpanMinutes < 540),
+  breakOverrideApplied:breakOverrideApplied || (usesShortShiftMealPolicy(attendanceDate) && deductedBreakMinutes < ALLOWED_BREAK_MINUTES) || (currentPolicy && !usesShortShiftMealPolicy(attendanceDate) && rawSpanMinutes < 540),
   standardBreakMinutes:ALLOWED_BREAK_MINUTES
  })
  const rawUndertimeMinutes = Math.max(
@@ -1453,18 +1463,20 @@ function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = ''
  })
  const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, resolvedBreakRowsByLogId)
  const breakEvidence = getAttendanceBreakPunchEvidence({ breakRowsByLogId:resolvedBreakRowsByLogId, metrics })
+ // Current shifts use the default meal deduction even without a break punch.
+ // Keep legacy review holds for dates before the short-shift policy only.
  const isShortScheduledDay = metrics.rawSpanMinutes > 0
   && metrics.rawSpanMinutes < REQUIRED_PAID_WORK_MINUTES + ALLOWED_BREAK_MINUTES
- const requiresReview = !metrics.breakOverrideApplied
+ const requiresReview = !usesShortShiftMealPolicy(attendanceDate)
+  && !metrics.breakOverrideApplied
   && !breakEvidence.hasBreakEvidence
-  && isShortScheduledDay
-  && metrics.undertimeMinutes > 0
+  && isShortScheduledDay && metrics.undertimeMinutes > 0
  if (!requiresReview) return null
 
  return buildPayrollAttendanceException(employee, attendanceDate, dayLogs, {
   ...integrity,
   code:'meal_break_review',
-  message:`No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.`
+  message:'No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.'
  })
 }
 
@@ -7697,6 +7709,7 @@ export default function App() {
  const [editVariantFields, setEditVariantFields] = useState({})
  const [savingVariantSetupId, setSavingVariantSetupId] = useState(null)
  const DONUT_VARIANTS_DEFAULT = [
+ ...SEASONAL_BOXES.map(box => ({ name:box.name, category:'Seasonal Boxes', selling_price:box.price, pieces_per_batch:1 })),
  { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
@@ -7715,7 +7728,7 @@ export default function App() {
  { name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
  { name:'Giant Donut', category:'Giant', selling_price:219, pieces_per_batch:null },
  ]
- const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium','Giant'])
+ const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium','Giant','Seasonal Boxes'])
  // Phase 3: Sales & Resellers 
  const [salesView, setSalesView] = useState('dashboard')
  const [resellers, setResellers] = useState([])
@@ -7808,6 +7821,9 @@ export default function App() {
  const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
  const [defaultOrderItems, setDefaultOrderItems] = useState([])
  const [deliveryInvoices, setDeliveryInvoices] = useState([])
+ const [sagsTransfers, setSagsTransfers] = useState([])
+ const [sagsTransfersAvailable, setSagsTransfersAvailable] = useState(false)
+ const [sagsTransfersLoadError, setSagsTransfersLoadError] = useState('')
  const INVOICE_DELETION_REASON_OPTIONS = [
   ['duplicate_invoice','Duplicate invoice'],
   ['incorrect_customer','Incorrect customer / reseller'],
@@ -8625,7 +8641,7 @@ setRequestingInvoiceDeletion(null)
 
  useEffect(() => {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
- if (isOwnerSide) loadDeliveryInvoices()
+ if (isOwnerSide) { loadDeliveryInvoices(); loadSagsTransfers() }
  }, [adminMode, adminRole])
 
  useEffect(() => {
@@ -11558,7 +11574,7 @@ Cancel = create batch record only for existing stock.`)
   return `${source}:${id}`
  }
  function getOutletProductCatalog() {
-  const donutProducts = (donutVariants || []).map(v => ({ source:'donut_variant', product_id:String(v.id || v.name || ''), product_name:v.name || 'Donut Product', product_type:'Donuts', category:v.category || 'Donuts', unit:'pcs', default_price:safeNum(v.reseller_price ?? v.selling_price ?? v.price, 0) }))
+  const donutProducts = (donutVariants || []).map(v => ({ source:'donut_variant', product_id:String(v.id || v.name || ''), product_name:v.name || 'Donut Product', product_type:'Donuts', category:v.category || 'Donuts', unit:seasonalBoxFor(v)?'boxes':'pcs', default_price:safeNum(v.reseller_price ?? v.selling_price ?? v.price, 0) }))
   const snackProducts = (inventoryItems || []).filter(item => isSnackDrinkInventoryItem(item)).map(item => ({ source:'inventory_item', product_id:String(item.id || ''), product_name:item.name || 'Inventory Item', product_type:classifyOutletInventoryProduct(item), category:getInventoryCategoryLabel(item), unit:item.unit || 'pcs', default_price:getSnackDrinkSellingPrice(item) }))
   const seen = new Set()
   return [...donutProducts, ...snackProducts].filter(product => { const key = getOutletProductKey(product); if (!key || seen.has(key)) return false; seen.add(key); return true }).sort((a,b)=>String(a.product_type).localeCompare(String(b.product_type)) || String(a.product_name).localeCompare(String(b.product_name)))
@@ -13142,6 +13158,7 @@ Cancel = create batch record only for existing stock.`)
  async function logProduction() {
   if (!prodDate) { showToast('Please select a date.','red'); return }
   const validEntries = prodEntries.filter(e => e.variant_id && Number(e.pieces) > 0)
+  if (validEntries.some(e => seasonalBoxFor(donutVariants.find(v => v.id === e.variant_id)))) { showToast('Log the Shells and Rings from the production forecast once. Seasonal boxes are packing/sales units.', 'red'); return }
   if (validEntries.length === 0) { showToast('Please add at least one production entry.','red'); return }
   const previewEntries = validEntries.map(e => {
    const variant = donutVariants.find(v => String(v.id) === String(e.variant_id))
@@ -14224,6 +14241,26 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
  }
 
+ async function loadSagsTransfers() {
+  setSagsTransfersLoadError('')
+  const rows = []
+  for (let offset = 0; ; offset += 500) {
+   const { data, error } = await supabase.from('sags_internal_transfers')
+    .select('id,transfer_number,delivery_date,status,sags_internal_transfer_items(variant_id,variant_name,quantity)')
+    .order('delivery_date', { ascending:false }).order('id', { ascending:false }).range(offset, offset + 499)
+   if (error) {
+    if (isSagsTransferSchemaMissing(error)) { setSagsTransfersAvailable(false); setSagsTransfers([]); return }
+    console.warn('SAGS production transfer load failed:', error)
+    setSagsTransfersLoadError('SAGS transfers could not be loaded. Refresh before using the production forecast.')
+    return
+   }
+   rows.push(...(data || []))
+   if (!data || data.length < 500) break
+  }
+  setSagsTransfers(rows)
+  setSagsTransfersAvailable(true)
+ }
+
  function getNextMonthStart(monthKey) {
  const clean = String(monthKey || today.slice(0,7)).slice(0, 7)
  const [year, month] = clean.split('-').map(Number)
@@ -14925,6 +14962,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
 
  const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length === 0) { showToast('Please add at least one item with quantity.','red'); return }
  try { wholeCrateQuantity(invoiceCrates, 'Crates Used') } catch (validationError) { showToast(validationError.message,'red'); return }
 
@@ -14938,6 +14976,11 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  setSavingInvoice(true)
  try {
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
+ if (sagsTransfersAvailable && reseller && String(reseller.name || '').trim().toLowerCase() === 'sags') {
+ showToast('SAGS is a company outlet. Use SAGS POS → Internal Transfers; no reseller invoice is needed.', 'red')
+ setSavingInvoice(false)
+ return
+ }
 
  if (customerType === 'reseller') {
  // Manual invoice creation must be checked against the actual selected reseller/branch only.
@@ -15063,6 +15106,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  return
  }
  const validItems = editInvoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
  try { wholeCrateQuantity(editingInvoice.crates_used, 'Crates Used') } catch (validationError) { showToast(validationError.message,'red'); return }
  setSavingEditInvoice(true)
@@ -15206,7 +15250,13 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
 
  function getProductionForecastInvoices(invoiceRows = deliveryInvoices, dateValue = forecastDate) {
-  return filterProductionForecastInvoices(invoiceRows, dateValue, productionForecastExcludedInvoiceIds)
+  const sagsResellerId = resellers.find(row => String(row.name || '').trim().toLowerCase() === 'sags')?.id || null
+  const planningRows = [...(invoiceRows || []), ...sagsTransfersAsForecastDeliveries(sagsTransfers, sagsResellerId)]
+  return filterProductionForecastInvoices(planningRows, dateValue, productionForecastExcludedInvoiceIds).map(invoice => ({
+   ...invoice,
+   seasonal_box_items:invoice.delivery_invoice_items || [],
+   delivery_invoice_items:expandSeasonalProductionItems(invoice.delivery_invoice_items || [], donutVariants)
+  }))
  }
 
  function openInvoiceDeletionCenter() {
@@ -15446,7 +15496,7 @@ function buildDeliveryInvoicePrintCSS() {
     'background:#1A1A2E!important;color:#ffffff!important;border-color:#1A1A2E!important;}',
 
     '.product-row td { height: 0.190in !important; font-size: 12px !important; }',
-    '.product-name { text-align: center !important; font-weight: 600 !important; }',
+    '.invoice-table .product-name { text-align: center !important; font-weight: 600 !important; white-space: normal !important; overflow-wrap: anywhere !important; line-height: 1.1 !important; }',
     '.number-cell { text-align: center !important; font-weight: 500 !important; }',
     '.money-cell { text-align: right !important; font-weight: 500 !important; }',
 
@@ -15573,9 +15623,10 @@ function buildDeliveryInvoicePrintCSS() {
       const price = first ? getPrice(first) : 0;
       const amount = matched.reduce((sum, item) => sum + getAmount(item), 0);
       const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0);
+      const productLabel = seasonalBoxFor(row.label)?.name || row.label;
 
       return `<tr class="product-row">
-        <td class="product-name">${escapeHtml(row.label)}</td>
+        <td class="product-name">${escapeHtml(productLabel)}</td>
         <td class="number-cell">${qty ? qty.toLocaleString('en-PH') : ''}</td>
         <td class="money-cell">${price ? peso(price) : ''}</td>
         <td class="money-cell">${amount ? peso(amount) : ''}</td>
@@ -15712,7 +15763,9 @@ function buildDeliveryInvoicePrintCSS() {
       { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
       { label:'Biscoreo', aliases:['Biscoreo'] },
       { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
-      { label:'Giant Donut', aliases:['Giant Donut'] }
+      { label:'M-Puff', aliases:['M-Puff'] },
+      { label:'Giant Donut', aliases:['Giant Donut'] },
+      ...SEASONAL_BOXES.map(box => ({ label:box.printLabel, aliases:[box.name] }))
     ];
 
   function sortDeliveryInvoiceItems(items) {
@@ -15738,6 +15791,7 @@ function buildDeliveryInvoicePrintCSS() {
     { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
     { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
     { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
+    { label:'M-Puff', aliases:['M-Puff'] },
     { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
     { label:'Rings', aliases:['Rings'] },
     { label:'Shells', aliases:['Shells'] },
@@ -15797,6 +15851,7 @@ function buildDeliveryInvoicePrintCSS() {
       normalizeDonutVariantName(item?.variant_name || item?.product_name || item?.name || '')
     ));
     return DELIVERY_INVOICE_PRODUCT_ORDER.filter(row => {
+      if (seasonalBoxFor(row.label)) return row.aliases.some(name => present.has(normalizeDonutVariantName(name)));
       if (!retired.has(normalizeDonutVariantName(row.label))) return true;
       return (row.aliases || [row.label]).some(alias => present.has(normalizeDonutVariantName(alias)));
     });
@@ -16256,6 +16311,8 @@ function buildDeliveryInvoicePrintCSS() {
      frameDocument.write(`<!doctype html><html><head><meta charset="utf-8">${buildDeliveryInvoicePrintCSS()}<style>
        html,body{width:${DELIVERY_INVOICE_SOURCE_WIDTH_MM}mm!important;min-height:${DELIVERY_INVOICE_SOURCE_HEIGHT_MM}mm!important;height:auto!important;overflow:visible!important;background:#fff!important;}
        .invoice-page{width:${DELIVERY_INVOICE_SOURCE_WIDTH_MM}mm!important;min-height:${DELIVERY_INVOICE_SOURCE_HEIGHT_MM}mm!important;height:auto!important;margin:0!important;overflow:visible!important;background:#fff!important;}
+       html,body{display:block!important;margin:0!important;padding:0!important;}
+       .invoice-table{height:auto!important;}
        .title-row td{justify-content:center!important;text-align:center!important;}
        .title-row img,.invoice-logo,img[alt*="logo" i]{display:none!important;}
      </style></head><body>${buildDeliveryInvoicePrintPage(invoice)}</body></html>`)
@@ -16957,6 +17014,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  async function saveDailySales() {
  if (!salesDate) { showToast(' Please select a date.','red'); return }
  const valid = salesEntries.filter(e => e.variant_id && Number(e.quantity) > 0)
+ try { assertWholeSeasonalBoxes(valid.map(row => ({ ...row, variant_name:row.variant_name || donutVariants.find(v=>v.id===row.variant_id)?.name }))) } catch (error) { showToast(error.message, 'red'); return }
  const validOtherSales = otherSalesEntries.filter(e => e.category && Number(e.amount) > 0)
  if (valid.length === 0 && validOtherSales.length === 0) {
  showToast(' Please add at least one donut sale or other sale entry.','red')
@@ -17076,7 +17134,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
  async function initProductionReport(deliveryDate) {
  // Load forecast from invoices for delivery date
- const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+ const forecastInvoices = getProductionForecastInvoices(deliveryInvoices, deliveryDate)
  const forecastMap = {}
  forecastInvoices.forEach(inv=>{
 ;(inv.delivery_invoice_items||[]).forEach(item=>{
@@ -17092,7 +17150,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
- const variantItems = sortDonutVariantsByGuide(variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+ const variantItems = sortDonutVariantsByGuide(variants||[]).filter(v=>!seasonalBoxFor(v)).map(v=>{ const existing = items.find(i=>i.variant_id===v.id || i.variant_name===v.name); return existing ? {...existing, variant_id:v.id} : { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
  setProductionReportItems(variantItems)
  setProductionReportDeliveryDate(deliveryDate)
  setShowProductionReport(true)
@@ -17520,6 +17578,11 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  async function saveInvoiceSettlement(inv) {
  if (settlementSavingRef.current.has(inv.id)) return
+ try {
+  const boxRows = settlementRows[inv.id] || buildInvoiceSettlementRows(inv)
+  assertWholeSeasonalBoxes(boxRows, 'actual_quantity')
+  assertWholeSeasonalBoxes(boxRows, 'returned_quantity')
+ } catch (error) { showToast(error.message, 'red'); return }
  const rows = (settlementRows[inv.id] || buildInvoiceSettlementRows(inv)).map(row => {
  const actual = Math.max(0, safeNum(row.actual_quantity, 0))
  const returned = Math.min(actual, Math.max(0, safeNum(row.returned_quantity, 0)))
@@ -17937,6 +18000,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  async function saveReturn(invoice) {
  const items = returnItems[invoice.id]||[]
  const validItems = items.filter(i=>Number(i.returned_qty)>0)
+ try { assertWholeSeasonalBoxes(validItems, 'returned_qty') } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length===0) { showToast(' Enter at least one returned quantity.','red'); return }
  for (const item of validItems) {
  if (Number(item.returned_qty) > item.delivered_qty) { showToast(` ${item.variant_name}: returned qty cannot exceed delivered qty.`,'red'); return }
@@ -18198,6 +18262,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  // still show them so old templates are not silently lost.
 ;(defaultRows || []).forEach(saved => {
  if (!rows.some(row => String(row.variant_id) === String(saved.variant_id))) {
+ if (seasonalBoxFor(saved)) return // An unavailable seasonal box must not return through an old default template.
  const retail = safeNum(saved.retail_price, 0)
  const price = moneyRound(retail * (1 - safeNum(discountPct, 20) / 100))
  rows.push({
@@ -18401,6 +18466,7 @@ async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', o
  if (!inv) { showToast(' Select an invoice first.','red'); return }
 
  const validItems = resellerReturnItems.filter(i=>safeNum(i.returned_qty,0)>0)
+ try { assertWholeSeasonalBoxes(validItems, 'returned_qty') } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length===0) { showToast(' Enter at least one returned/unsold quantity.','red'); return }
 
  for (const item of validItems) {
@@ -18412,7 +18478,7 @@ async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', o
 
  setSubmittingResellerReturn(true)
  try {
- const totalQty = validItems.reduce((s,i)=>s+safeNum(i.returned_qty,0),0)
+ const totalQty = validItems.reduce((s,i)=>s+physicalDonutQuantity(i, 'returned_qty'),0)
  const totalCredit = validItems.reduce((s,i)=>s+safeNum(i.returned_qty,0)*safeNum(i.reseller_price,0),0)
 
  const { data:ret, error:retErr } = await supabase.from('reseller_returns').insert({
@@ -18685,6 +18751,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length === 0) { showToast(' Enter at least one quantity.', 'red'); return }
  if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before saving. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.', 'red'); return }
@@ -18709,7 +18776,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  setUpdatingResellerOrder(true)
  try {
  const total = validItems.reduce((s,i)=>s+Number(i.quantity)*safeNum(i.reseller_price,0),0)
- const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
+ const totalQty = validItems.reduce((s,i)=>s+physicalDonutQuantity(i),0)
 
  const { data:updatedOrder, error:updateErr } = await supabase
  .from('reseller_orders')
@@ -18805,6 +18872,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
 
  const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
  if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
@@ -18870,7 +18938,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
- const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
+ const totalQty = validItems.reduce((s,i)=>s+physicalDonutQuantity(i),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
  reseller_id:orderBranch.id, reseller_name:orderBranch.name,
  order_date:today, delivery_date:deliveryDateKey,
@@ -18978,8 +19046,13 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  const approvalOrder = { ...order, ...freshOrder }
+ if (sagsTransfersAvailable && String(resellers.find(r => String(r.id) === String(approvalOrder.reseller_id))?.name || approvalOrder.reseller_name || '').trim().toLowerCase() === 'sags') {
+  showToast('SAGS is a company outlet. Record this delivery under SAGS POS → Internal Transfers.', 'red')
+  return
+ }
  const rawItems = customItems || freshOrder.reseller_order_items || []
  const { items:validItems, duplicates:duplicateOrderRows } = collapseDuplicateOrderItemsByProduct(rawItems)
+ assertWholeSeasonalBoxes(validItems)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
  if (duplicateOrderRows.length > 0) {
   const duplicateNames = [...new Set(duplicateOrderRows.map(row => row.name).filter(Boolean))].slice(0, 8).join(', ')
@@ -20116,6 +20189,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  if (undertimeMinutes>0) msg += `\n\n ${rawUndertimeMinutes} actual shortage minute(s) were detected. The system recorded ${undertimeMinutes} chargeable UT minute(s) under the ${UNDERTIME_BLOCK_MINUTES}-minute block policy and will deduct them automatically in payroll. No UT request or admin approval is required.`
  if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No automatic UT deduction was created.`
  if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break was recorded separately as Overbreak and was not rounded again into UT.`
+ if (usesShortShiftMealPolicy(activeAttendanceDate) && totalBreakMins === 0) {
+  msg += attendanceMetrics.rawSpanMinutes <= SHORT_SHIFT_MAX_MINUTES
+   ? '\n\n Short shift: no meal break was deducted. Scheduled hours not worked still count as undertime.'
+   : '\n\n No break punch was recorded for this longer shift. Payroll will wait for a supervisor or owner to review continuous work or correct a missing break punch.'
+ }
  if (totalBreakMins===0 && !usesMinuteAttendancePolicy(activeAttendanceDate)) msg += `\n\n No meal break was recorded. The standard 60-minute deduction was applied. If you genuinely worked continuously without a meal break, file a No Meal Break exception for admin review before payroll; approval will recalculate automatic UT and any OT eligibility.`
   alert(msg)
  }
@@ -20162,8 +20240,8 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
 }
 
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
- if (typeValue === 'meal_break') { const blocked = {loading:false, canSubmit:false, minutes:0, message:'New No Meal Break filings are no longer allowed.'}; setTimeAdjPreview(blocked); return blocked }
  const targetDate = String(dateValue || '').slice(0, 10)
+ if (typeValue === 'meal_break' && !usesShortShiftMealPolicy(targetDate)) { const blocked = {loading:false, canSubmit:false, minutes:0, message:'No Meal Break filing is available only for reviewed shifts from October 11, 2026.'}; setTimeAdjPreview(blocked); return blocked }
  const requestType = String(typeValue || 'overtime').toLowerCase()
  const overtimePayEligible = employeeRuleEnabled(employee?.overtime_pay_eligible, true)
  if (requestType === 'undertime') {
@@ -20257,7 +20335,9 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
     revisedUTMinutes
    }
 
-   if (activeMealBreak) {
+   if (validation.metrics.rawSpanMinutes <= SHORT_SHIFT_MAX_MINUTES) {
+    message = 'Shifts of five hours or less automatically have no unpunched meal deduction. No request is needed.'
+   } else if (activeMealBreak) {
     message = activeMealBreak.status === 'approved'
      ? `A No Meal Break exception is already approved for this attendance shift (${activeMealBreak.attendance_date}). Another filing is blocked unless the approved exception is voided first.`
      : `A No Meal Break filing is already pending for this attendance shift (${activeMealBreak.attendance_date}). Please wait for admin review instead of filing another request.`
@@ -20279,10 +20359,10 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
      message = 'No Meal Break filing is blocked because OT is already approved for this attendance shift. Ask the admin to undo that OT approval first, then file the break exception so all minutes can be recalculated in the correct order.'
     } else {
      canSubmit = true
-     message = `No break was recorded. The standard ${validation.metrics.deductedBreakMinutes}-minute deduction remains active unless this filing is approved. If approved, paid work becomes ${revisedMetrics.paidWorkedMinutes} minute(s), resulting in ${revisedOTMinutes} OT minute(s) and ${revisedUTMinutes} UT minute(s).`
+     message = `No break was recorded on this longer shift. The standard 60-minute meal deduction applies without blocking payroll. If continuous work is approved, paid work is ${revisedMetrics.paidWorkedMinutes} minute(s), with ${revisedOTMinutes} OT and ${revisedUTMinutes} UT minute(s). If a meal break was taken, correct the missing break punch instead.`
     }
    }
-  } else if (!usesMinuteAttendancePolicy(canonicalDate) && activeMealBreakRequests.some(row => row.status === 'pending')) {
+  } else if (activeMealBreakRequests.some(row => row.status === 'pending')) {
    message = 'OT filing is blocked while a No Meal Break request is pending for this attendance shift. The break decision must be reviewed first because it changes the final paid-work, OT, and automatic UT minutes.'
   } else if (requestType === 'overtime' && minutes <= 0) {
    message = 'No overtime can be filed. The attendance record has no payable minutes beyond eight paid work hours after the approved break treatment.'
@@ -20321,7 +20401,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
 }
 
  async function submitTimeAdjRequest() {
- if (otRequestType === 'meal_break') { alert('New No Meal Break filings are no longer allowed.'); return }
+ if (otRequestType === 'meal_break' && !usesShortShiftMealPolicy(otRequestDate)) { alert('No Meal Break review is available only from October 11, 2026.'); return }
  if (timeAdjSubmitLockRef.current) return
  if (otRequestType === 'undertime') {
   alert(`Undertime cannot be filed. It is calculated from verified attendance and deducted automatically in ${UNDERTIME_BLOCK_MINUTES}-minute blocks.`)
@@ -20448,7 +20528,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   }
   alert(otRequestType === 'overtime'
    ? `Overtime request filed for the system-locked actual range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)}. ${safeNum(preview?.rangeValidation?.filedRawMinutes, exactMinutes)} actual minute(s) convert to ${exactMinutes} payable minute(s) under the attendance-date OT policy, under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
-   : `No Meal Break exception filed for attendance date ${canonicalAttendanceDate}. The standard 60-minute deduction remains active while the request is pending. If approved, the system will recalculate automatic UT and any OT eligibility from actual attendance.`
+   : `No Meal Break review filed for ${canonicalAttendanceDate}. Payroll remains held until the continuous work is approved or the missing break punch is corrected.`
   )
   setOtRequestReason('')
   setOtRequestReasonPreset('')
@@ -25204,7 +25284,7 @@ async function requestPushPermission() {
  setHolidays(prev=>prev.filter(h=>h.id!==id)); showToast(' Holiday deleted')
  }
  async function getTimeAdjAdminValidation(req = {}) {
- if (req.request_type === 'meal_break' && usesMinuteAttendancePolicy(req.attendance_date)) return {loading:false, canApprove:false, message:'No Meal Break is disabled from October 6, 2026.'}
+ if (req.request_type === 'meal_break' && !usesShortShiftMealPolicy(req.attendance_date)) return {loading:false, canApprove:false, message:'No Meal Break review is available only from October 11, 2026.'}
 
  const requestType = String(req?.request_type || '').toLowerCase()
  const parsedTimeReason = parseTimeAdjustmentEmployeeReason(req?.employee_reason || '')
@@ -25276,7 +25356,7 @@ async function requestPushPermission() {
     isApprovedTimeAdjustmentConsumedByReleasedPayroll(row, payrollState.records, validation.integrity.completedLogs)
    )
    const approvedTimeConflict = getUnconsumedApprovedTimeAdjustmentConflict(approvedTimeRows || [], payrollState.records, validation.integrity.completedLogs)
-   const canApprove = !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
+   const canApprove = validation.metrics.rawSpanMinutes > SHORT_SHIFT_MAX_MINUTES && !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
    let message = `Current rule: ${validation.metrics.rawSpanMinutes} raw minute(s) less ${validation.metrics.excludedEarlyMinutes || 0} early-arrival minute(s) and ${validation.metrics.deductedBreakMinutes} unpaid break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s). `
    if (breakPunchEvidence.hasBreakEvidence) {
     message += getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval')
@@ -25319,7 +25399,7 @@ async function requestPushPermission() {
    .eq('status', 'pending')
    .limit(1)
   if (pendingMealBreakError) throw pendingMealBreakError
-  if (pendingMealBreakRows?.length && !usesMinuteAttendancePolicy(resolvedAttendanceDate)) {
+  if (pendingMealBreakRows?.length) {
    return {
     loading:false,
     requestType,
@@ -25541,13 +25621,20 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }
 
  async function approveMealBreakExceptionRequest(req, validation, context = {}) {
- if (usesMinuteAttendancePolicy(validation?.resolvedAttendanceDate || req.attendance_date)) { showToast('No Meal Break approval is disabled from October 6, 2026.', 'red'); return }
+ if (!usesShortShiftMealPolicy(validation?.resolvedAttendanceDate || req.attendance_date)) { showToast('No Meal Break review is available only from October 11, 2026.', 'red'); return }
+ if (!['owner','manager','supervisor','asst_supervisor'].includes(normalizedAdminRole) || String(req.employee_id) === String(adminEmployee?.id)) { showToast('A separate authorized supervisor or owner must review this request.', 'red'); return }
  const targetDate = String(context.targetDate || validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0,10)
  const requestedAttendanceDate = String(context.requestedAttendanceDate || req?.attendance_date || '').slice(0,10)
  const duplicateDates = Array.from(new Set(context.duplicateDates || [requestedAttendanceDate, targetDate].filter(Boolean)))
  const reviewNote = String(context.reviewNote || '').trim()
  if (!reviewNote) {
   showToast('Admin response is required before approving a No Meal Break exception.', 'red')
+  return
+ }
+ const { data:reviewedEmployee, error:reviewedEmployeeError } = await supabase.from('employees').select('admin_role').eq('id',req.employee_id).maybeSingle()
+ if (reviewedEmployeeError || !reviewedEmployee) { showToast('Employee role could not be verified. Review blocked.', 'red'); return }
+ if (['owner','manager','admin','hr','payroll','supervisor','asst_supervisor'].includes(String(reviewedEmployee.admin_role || '').toLowerCase()) && !isOwnerRole) {
+  showToast('Only the owner can approve a supervisor or admin meal-break exception.', 'red')
   return
  }
 
@@ -25570,6 +25657,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }
 
  const breakPunchEvidence = getAttendanceBreakPunchEvidence(validation)
+ if (validation.metrics.rawSpanMinutes <= SHORT_SHIFT_MAX_MINUTES) { showToast('Short shifts receive the automatic no-break rule and do not need approval.', 'red'); return }
  const recordedBreakMinutes = breakPunchEvidence.recordedBreakMinutes
  if (breakPunchEvidence.hasBreakEvidence) {
   showToast(getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval'), 'red')
@@ -25714,7 +25802,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  showToast('New No Meal Break filings are no longer allowed.', 'red')
  }
  async function approveTimeAdj(req) {
- if (req.request_type === 'meal_break' && usesMinuteAttendancePolicy(req.attendance_date)) { showToast('No Meal Break approval is disabled from October 6, 2026.', 'red'); return }
+ if (req.request_type === 'meal_break' && !usesShortShiftMealPolicy(req.attendance_date)) { showToast('No Meal Break review is available only from October 11, 2026.', 'red'); return }
  if (timeAdjApprovalLockRef.current) {
   showToast('Another attendance approval is already being processed. Please wait for it to finish before approving another request.', 'orange')
   return
@@ -25830,7 +25918,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   .eq('status', 'pending')
   .limit(1)
  if (pendingMealBreakError) { showToast('Failed checking pending No Meal Break request: '+pendingMealBreakError.message, 'red'); return }
- if (pendingMealBreakRows?.length && !usesMinuteAttendancePolicy(resolvedAttendanceDate)) {
+ if (pendingMealBreakRows?.length) {
   showToast(`Approval blocked: a No Meal Break exception is pending for ${targetDate}. Review it first because it changes final OT eligibility and automatic UT minutes.`, 'red')
   return
  }
@@ -29378,6 +29466,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     loadPagasaRegion1Weather({ force:forceWeather, silent:true }),
     loadResellers(),
     loadDeliveryInvoices(),
+    loadSagsTransfers(),
     loadProductionForecastExclusions({ silent:true }),
     loadDonutVariants()
    ])
@@ -30911,8 +31000,8 @@ async function computePayroll() {
    .map(([dateKey, dayLogs]) => buildPayrollMealBreakReviewException(emp, dateKey, dayLogs, breakRowsByLogId))
    .filter(Boolean)
   if (mealBreakReviewIssues.length > 0) {
-   // Do not create a payslip that may silently deduct a meal break which was
-   // never taken. The DTR must first record the break or approve No Meal Break.
+   // Only legacy meal-review holds remain. Current completed shifts use the
+   // default meal deduction and are not held for a missing break punch.
    continue
   }
 
@@ -32858,7 +32947,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     .order('created_at', { ascending:false })
    if (error) throw error
    const rows = data || []
-   const existing = rows[0] || null
+   const existing = dailyPosClosing(rows)
    setExistingShiftClosing(existing)
    if (existing) {
     setClosingOpeningCash(String(safeNum(existing.opening_cash, 0)))
@@ -32926,7 +33015,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const rows = allDates.map(dateKey => {
     const summary = summarizeActivePosSales(salesByDate[dateKey] || [], monitorPaymentRows)
     const closingRows = closingsByDate[dateKey] || []
-    const closing = closingRows[0] || null
+    const closing = dailyPosClosing(closingRows)
     const marker = getPosShiftDailySalesMarker(POS_OUTLET_ID, dateKey)
     const dayDailyRows = dailyByDate[dateKey] || []
     const linkedDailyRows = dayDailyRows.filter(row => String(row?.notes || '').includes(marker))
@@ -32947,14 +33036,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      statusCode = dateKey === todayDate ? 'in_progress' : 'unclosed'
      if (dateKey !== todayDate) issues.push('POS transactions exist but no shift closing was saved.')
     } else if (closing) {
-     if (closingRows.length > 1) issues.push(`${closingRows.length} shift closing records exist for the same date.`)
+     const duplicateClosings = closingRows.filter(row => !row.shift_id).length > 1 || new Set(closingRows.filter(row => row.shift_id).map(row => row.shift_id)).size !== closingRows.filter(row => row.shift_id).length
+     if (duplicateClosings) issues.push('Duplicate closing records exist for the same shift or daily summary.')
      if (!closingMatchesSales) issues.push('Saved closing no longer matches current active POS transactions or payment totals.')
      if (linkedDailyRows.length > 1) issues.push(`${linkedDailyRows.length} linked Daily Sales records exist for the same shift.`)
      if (possibleLegacyRows.length > 0) issues.push('A possible manually posted POS Daily Sales record may duplicate the automatic posting.')
      if (!linkedDaily) issues.push('Shift is closed but no linked Daily Sales posting exists.')
      else if (!dailyMatchesClosing) issues.push('Linked Daily Sales amount does not match the saved shift closing.')
 
-     if (closingRows.length > 1 || !closingMatchesSales || linkedDailyRows.length > 1 || possibleLegacyRows.length > 0 || (linkedDaily && !dailyMatchesClosing)) statusCode = 'review_required'
+     if (duplicateClosings || !closingMatchesSales || linkedDailyRows.length > 1 || possibleLegacyRows.length > 0 || (linkedDaily && !dailyMatchesClosing)) statusCode = 'review_required'
      else if (!linkedDaily) statusCode = 'closed_not_posted'
      else statusCode = 'closed'
     }
@@ -34494,6 +34584,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
    </div>
 
+   <SagsInternalTransfers supabase={supabase} adminRole={adminRole} onReceived={() => loadPosMonitor({ silent:true, forceProducts:true })} />
    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
 
    <div style={{ background:'#ffffff', border:`2px solid ${actionableShiftClosingRows.length > 0 ? '#ca1b1b' : '#2d8a4e'}`, borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
@@ -35340,6 +35431,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  { key:'crates', icon:'📦', label:'Crates Inventory',
  tabs:[{key:'crates',label:'Crates & Covers'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+ { key:'cartLoans', icon:'🛒', label:'Rolling Cart Loans',
+ tabs:[{key:'cartLoans',label:'Cart Loans & Payments'}], roles:['owner'] },
  { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
  tabs:[{key:'sops',label:'SOP Control Center'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
@@ -37010,7 +37103,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
-if(key==='sales') { setReceivableOutlet(null); setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+if(key==='sales') { setReceivableOutlet(null); setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadSagsTransfers(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
 if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) loadInvoiceDeletionRequests({ silent:true })
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='returnsMonitor') void loadSherylReturnsMonitor(foundationMonth)
@@ -37383,6 +37476,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
+ {activeTab==='cartLoans' && isOwnerRole && <RollingCartLoans supabase={supabase} today={today} />}
 
  {/* DASHBOARD */}
  {/* DYNAMIC_OWNER_COMMAND_CENTER_V2 */}
@@ -38887,7 +38981,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <h2 style={h2s}>Overtime / Meal-Break Exceptions</h2>
  <div style={{ background:'linear-gradient(135deg,#fff8dc,#fffdf4)', border:'2px solid #FDD412', borderLeft:'6px solid #ca1b1b', borderRadius:'14px', padding:'14px', margin:'0 0 14px', width:'100%', boxSizing:'border-box', boxShadow:'0 4px 14px rgba(253,212,18,0.12)' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
- <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. No Meal Break review must be completed before OT approval because it changes paid-work minutes. Payroll undertime is attendance-detected and deducted automatically in {UNDERTIME_BLOCK_MINUTES}-minute blocks; it has no filing or approval step. Use <strong>Void / Undo</strong> for OT (or historical No Meal Break) before payroll release; use Payroll Adjustment after release.</p>
+  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>From October 11, shifts of five hours or less with no break punch have no meal deduction. Longer unpunched shifts use the standard 60-minute meal deduction without blocking payroll. Approved No Meal Break exceptions still apply. Undertime remains separate and automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
 
  <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.20)', borderTop:'5px solid #ca1b1b', borderRadius:'16px', padding:'16px', margin:'0 0 16px', width:'100%', boxShadow:'0 5px 18px rgba(26,26,46,0.07)', boxSizing:'border-box' }}>
@@ -38932,7 +39026,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ border:'1px solid #dbe9f8', borderRadius:'12px', overflow:'hidden' }}>
  <div style={{ background:'#eef6ff', color:'#1f5f99', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Automatic Undertime Policy</div>
  <div style={{ padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.6 }}>
-  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically during payroll computation. Historical No Meal Break approvals remain in their original dates. From October 6, 2026, full shifts have an automatic 60-minute unpaid break; short shifts use recorded breaks. OT remains approval-driven and is paid per minute.
+  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically. From October 11, 2026, a shift of up to five hours with no break has zero meal deduction. Longer shifts without a break punch use the standard 60-minute meal deduction without blocking payroll. OT remains approval-driven.
  </div>
  </div>
  </div>
@@ -39108,7 +39202,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  {!isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && (
   <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #FDD412', background:'#fff8dc', borderRadius:'9px', color:'#1a1a2e', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
-   No break punch is recorded. The calculation above is still using the standard 60-minute deduction. After verifying that the employee actually worked continuously, use <strong>CONFIRM NO BREAK &amp; RECALCULATE</strong>. Otherwise, keep the standard deduction.
+   No break punch is recorded. From October 11, shifts longer than five hours use the standard 60-minute meal deduction without blocking payroll. If continuous work is verified, review a No Meal Break exception; for a forgotten break punch, correct the DTR.
   </div>
  )}
   <p style={{ margin:'10px 0 0', color:approvalBlocked?'#ca1b1b':'#2d8a4e', fontWeight:'800', fontSize:'12px', lineHeight:1.5 }}>{adminValidation?.message || 'Attendance calculation is loading. The system will revalidate before saving.'}</p>
@@ -43628,6 +43722,9 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printCostingReport}> PRINT REPORT</button>
  </div>
 
+ <div style={{ background:'#fff9e6', border:'1px solid #f5c518', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px', fontSize:'12px' }}>
+ <b>Seasonal boxes</b>: 6-piece box = 3 Shells + 3 Rings (₱160); 12-piece box = 5 Shells + 7 Rings (₱315). Recipe batch yield is in boxes. Complete the exact Halloween ingredients and packaging costs before relying on margin estimates. Production logs use the component Shells/Rings once; box quantities are used for ordering, packing and selling.
+ </div>
  {/* Sub-navigation */}
  <div className="romas-module-tabs" style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
  {[['dashboard','Dashboard'],['recipes','Product Cost'],['settings','Cost Allocation'],['profiles','Cost Profiles'],['analysis','Cost Analysis'],['production','Production']].map(([v,l])=>(
@@ -44212,7 +44309,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <select value={entry.variant_id} onChange={e=>{ const upd=[...prodEntries]; upd[i]={...upd[i],variant_id:e.target.value}; setProdEntries(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
  <option value=""> Select variant </option>
  {VARIANT_CATEGORIES.map(cat=>{
- const catV = donutVariants.filter(v=>v.category===cat)
+ const catV = donutVariants.filter(v=>v.category===cat && !seasonalBoxFor(v))
  if (!catV.length) return null
  return <optgroup key={cat} label={cat}>{catV.map(v=><option key={v.id} value={v.id}>{v.name} ( {v.selling_price})</option>)}</optgroup>
  }) }
@@ -45441,6 +45538,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   'Choco Lollisticks': 0,
   'Glazed Circlets': 11.7,
   'Assorted Circlets (unallocated)': 11.7,
+  'M-Puff': 11.7,
   'Cinnamon Rolls': 27,
   'Rings': 27,
   'Assorted Rings (unallocated)': 27,
@@ -45509,6 +45607,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const forecastInvoices = getProductionForecastInvoices(deliveryInvoices, forecastDate)
  const onlineForecastReady = !ONLINE_FORECAST_ENABLED || (onlineForecast.status === 'ready' && onlineForecast.date === forecastDate)
  const onlineSummary = ONLINE_FORECAST_ENABLED && onlineForecastReady ? onlineForecast.summary : null
+ const seasonalPacking = seasonalPackingSummary(forecastInvoices.flatMap(inv => inv.seasonal_box_items || []))
  const forecastMap = {}
 
  forecastInvoices.forEach(inv => {
@@ -45523,9 +45622,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
      variant_id: item.variant_id,
      total: 0,
      invoicePieces: 0,
-     onlinePieces: 0
+     onlinePieces: 0,
+     seasonal_pieces: 0
     }
    }
+   forecastMap[key].seasonal_pieces += safeNum(item.seasonal_pieces, 0)
 
    forecastMap[key].total = safeNum(forecastMap[key].total, 0) + safeNum(item.quantity, 0)
    forecastMap[key].invoicePieces += safeNum(item.quantity, 0)
@@ -45549,7 +45650,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const variantName = variant?.name || variant?.variant_name || variant?.product_name || ''
   const variantKey = forecastNameKey(variantName)
 
-  if (!variantName || existingForecastKeys.has(variantKey)) return
+  if (!variantName || seasonalBoxFor(variantName) || existingForecastKeys.has(variantKey)) return
 
   forecastRows.push({
    id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
@@ -45572,6 +45673,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  })
 
  forecastRows = (forecastRows || [])
+  .filter(row => forecastNameKey(row.variant_name) !== 'cinnamonrolls')
   .map(row => {
    const cleanTotal = getForecastRowTotal(row)
    return {
@@ -45592,6 +45694,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const totalPieces = safeNum((forecastRows || []).reduce((s,r)=>s+getForecastRowTotal(r),0),0)
  const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
  const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
+
+ // Cutting/counting subtotal for the six same-size varieties marked by production.
+ const smallDonutKeys = new Set(['chocoballs', 'matchapops', 'taropops', 'strawberrypops', 'bavarianpops', 'bavarianbites'])
+ const smallDonutRows = forecastRows.filter(row => smallDonutKeys.has(forecastNameKey(row.variant_name)))
+ const smallDonutPieces = smallDonutRows.reduce((sum, row) => sum + getForecastRowTotal(row), 0)
+ const smallDonutLastRow = smallDonutRows[smallDonutRows.length - 1]
 
  const printForecast = async () => {
  if (!onlineForecastReady) { showToast('Online orders must load before printing a production order.','red'); return }
@@ -45616,6 +45724,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   }
  }
  /* PRODUCTION_FORECAST_HALF_LONG_BOND_REFERENCE_V8 */
+ if (sagsTransfersLoadError) { showToast(sagsTransfersLoadError, 'red'); return }
  let node = null
  try {
   const rows = Array.isArray(forecastRows) ? forecastRows : []
@@ -45624,7 +45733,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const rawDate = String(forecastDate || '').slice(0,10)
   const dateParts = rawDate.split('-')
   const dateText = dateParts.length === 3 ? dateParts[1]+' / '+dateParts[2]+' / '+dateParts[0] : rawDate
-  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>').join('')
+  const seasonalPackingText = seasonalPacking.map(row => `${row.boxes} x ${row.pieces}-piece box: ${row.shellPieces} Shells + ${row.ringPieces} Rings`).join(' | ')
+  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>POPS AND BITES TOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td></tr>' : '')).join('')
 
   node = document.createElement('div')
   node.style.cssText = 'position:fixed;left:-10000px;top:0;width:1300px;height:1700px;background:#fff;overflow:hidden;pointer-events:none;'
@@ -45632,10 +45742,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    '<div style="display:flex;justify-content:space-between;border-bottom:4px solid #d91c1c;padding-bottom:11px;margin-bottom:14px"><div><div style="font-size:34px;font-weight:900;color:#d91c1c">Roma\'s Donuts</div><div style="font-size:14px;margin-top:6px;font-weight:700">Delivery Date: '+esc(dateText)+'</div></div><div style="font-size:26px;font-weight:900;color:#d91c1c">PRODUCTION ORDER</div></div>'+
    '<div style="border:3px solid #178b3d;border-radius:12px;padding:13px;text-align:center;background:#f0faf2;margin-bottom:11px"><div style="font-size:58px;line-height:1;font-weight:900;color:#178b3d">'+esc(totalDryPremixKg)+' KG</div></div>'+
    '<div style="border:2px solid #e22;border-radius:9px;padding:6px;text-align:center;margin-bottom:11px"><div style="font-size:12px;font-weight:700">TOTAL PIECES (INVOICES '+fmt(invoicePieces)+' + ONLINE '+fmt(onlinePieces)+')</div><div style="font-size:38px;line-height:1;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+' pcs</div></div>'+
+   (seasonalPackingText ? '<div style="font-size:17px;font-weight:700;padding:8px;background:#fff9e6;margin-bottom:8px">HALLOWEEN PACKING: '+esc(seasonalPackingText)+' (included in variety totals)</div>' : '')+
    '<table style="width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px"><thead><tr><th style="text-align:left;background:#d91c1c;color:white;padding:10px 14px;width:68%">VARIANT</th><th style="text-align:right;background:#d91c1c;color:white;padding:10px 14px;width:32%">PIECES</th></tr></thead><tbody>'+rowHtml+'</tbody><tfoot><tr><td style="border-top:3px solid #d91c1c;padding:8px 9px;font-weight:900">TOTAL</td><td style="border-top:3px solid #d91c1c;padding:8px 9px;text-align:right;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+'</td></tr></tfoot></table>'+
    '<div style="margin-top:28px;padding-top:18px;border-top:2px solid #888;display:flex;justify-content:space-between;font-size:12px;font-weight:700"><span>Prepared by: __________________</span><span>Checked by: __________________</span></div></div>'
   document.body.appendChild(node)
-  node.firstElementChild.querySelectorAll('tbody td').forEach(cell => { cell.style.padding='16px 16px'; cell.style.border='1.5px solid #a9a9a9'; cell.style.fontWeight='700'; cell.style.fontSize='24px'; cell.style.lineHeight='1.08' })
+  node.firstElementChild.querySelectorAll('tbody td').forEach(cell => { cell.style.padding=seasonalPacking.length?'12px 16px':'16px 16px'; cell.style.border='1.5px solid #a9a9a9'; cell.style.fontWeight='700'; cell.style.fontSize='24px'; cell.style.lineHeight='1.08' })
   node.firstElementChild.querySelectorAll('tbody td.q').forEach(cell => { cell.style.textAlign='right'; cell.style.fontWeight='900'; cell.style.color='#d91c1c'; cell.style.borderLeft='2.5px solid #777'; cell.style.fontSize='25px' })
 
   const canvas = await html2canvas(node.firstElementChild,{scale:3,backgroundColor:'#fff',useCORS:true,logging:false,width:1300,height:1700})
@@ -45701,18 +45812,24 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {forecastExcludedInvoices.length} invoice{forecastExcludedInvoices.length!==1?'s are':' is'} excluded from production because deletion approval is pending. If the owner rejects the request, the invoice will return to the forecast automatically.
  </div>
  )}
+ {seasonalPacking.length > 0 && <div style={{ background:'#fff9e6', border:'1px solid #f5c518', borderRadius:'9px', padding:'12px', marginBottom:'10px' }}>
+ <strong style={{ color:'#ca1b1b', fontSize:'13px' }}>HALLOWEEN PACKING</strong>
+ {seasonalPacking.map(row => <p key={row.code} style={{ fontSize:'12px', margin:'6px 0' }}>{row.boxes.toLocaleString('en-PH')} × {row.pieces}-piece box: <b>{row.shellPieces} Shells + {row.ringPieces} Rings</b> ({row.totalPieces} donuts)</p>)}
+ <p style={{ fontSize:'11px', margin:'5px 0 0', color:'#555' }}>These Halloween pieces are already included in the Shells and Rings totals below. Decorate and pack separately; do not add them again.</p>
+ </div>}
+ {sagsTransfersLoadError && <p role="alert" style={{ color:'#b91c1c', fontWeight:'bold', fontSize:'12px' }}>{sagsTransfersLoadError} <button type="button" onClick={loadSagsTransfers}>Retry</button></p>}
  {forecastInvoices.length === 0 && (!onlineSummary || onlineSummary.orderCount === 0)? (
  <div style={{ textAlign:'center', padding:'24px', color:'#aaa' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}> </p>
- <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>{ONLINE_FORECAST_ENABLED?'No active invoices or accepted online orders':'No active production invoices'} for {forecastDate}</p>
- <p style={{ fontSize:'11px', margin:0 }}>{productionForecastExclusionsLoading?'Checking deletion requests...':forecastExcludedInvoices.length>0?'All invoices for this date are pending deletion approval.':'Create invoices with this delivery date and they will automatically appear here.'}</p>
+ <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>{ONLINE_FORECAST_ENABLED?'No delivery records or accepted online orders':'No active production delivery records'} for {forecastDate}</p>
+ <p style={{ fontSize:'11px', margin:0 }}>{productionForecastExclusionsLoading?'Checking deletion requests...':forecastExcludedInvoices.length>0?'All invoices for this date are pending deletion approval.':sagsTransfersAvailable?'Create a delivery invoice or SAGS internal transfer for this date to include its pieces here.':'Create a delivery invoice for this date to include its pieces here.'}</p>
  </div>
  ): (
  <div>
  {showForecastVariants? (
  <div>
  <div style={{ display:'flex', gap:'6px', marginBottom:'8px', flexWrap:'wrap' }}>
- <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''}</span>
+ <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} delivery record{forecastInvoices.length!==1?'s':''}</span>
  {ONLINE_FORECAST_ENABLED && <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{onlineSummary?.orderCount || 0} accepted online order{onlineSummary?.orderCount===1?'':'s'}</span>}
  <span style={{ background:'#fff9e6', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{forecastRows.length} variant{forecastRows.length!==1?'s':''}</span>
  </div>
@@ -45725,11 +45842,20 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kg = (grams/1000).toFixed(2)
  return (
- <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Invoice {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</span>
+ <Fragment key={r.variant_name}>
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</span>
  <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
  <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
  </div>
+ {r === smallDonutLastRow && (
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+ <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>POPS AND BITES TOTAL</span>
+ <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{smallDonutPieces.toLocaleString('en-PH')}</span>
+ <span />
+ </div>
+ )}
+ </Fragment>
  )
  }) }
  <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
@@ -45742,7 +45868,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  ): forecastInvoices.length > 0 || (onlineSummary?.orderCount || 0) > 0? (
  <div style={{ textAlign:'center', padding:'12px', background:'#f8f7f5', borderRadius:'10px', marginTop:'8px' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>Variants hidden</p>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''} + {onlineSummary?.orderCount || 0} online order{onlineSummary?.orderCount===1?'':'s'} · {totalPieces.toLocaleString()} pcs · {totalDryPremixKg} kg</p>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} delivery record{forecastInvoices.length!==1?'s':''}{ONLINE_FORECAST_ENABLED?` + ${onlineSummary?.orderCount || 0} online order${onlineSummary?.orderCount===1?'':'s'}`:''} · {totalPieces.toLocaleString()} pcs · {totalDryPremixKg} kg</p>
  </div>
  ): null}
  </div>
@@ -46241,7 +46367,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 <label style={lblS}>Reseller:</label>
 <select value={invoiceResellerId} onChange={async e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); await buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
 <option value="">Select reseller</option>
-{resellers.map(r=>{
+{resellers.filter(r => !sagsTransfersAvailable || String(r.name || '').trim().toLowerCase() !== 'sags').map(r=>{
  const credit = getResellerCreditBlockInfo(r.id)
  return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' CREDIT WARNING': ''}</option>
 })}
@@ -46340,6 +46466,7 @@ onClick={async ()=>{
 <div style={{ display:'grid', gridTemplateColumns:'3fr .75fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
 {['Variant','Qty','Retail',`${safeNum(invoiceDiscountPct,0)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
 </div>
+<p style={{ fontSize:'11px', color:'#7a4d00', margin:'5px 0' }}>Spooky Donuts: enter whole BOXES. Prices are per box; production expands each box automatically.</p>
 {invoiceItems.map((item,i)=>{
  const variant = donutVariants.find(v=>v.id===item.variant_id)
  const retailPrice = safeNum(variant?.selling_price ?? item.retail_price, 0)
@@ -46353,7 +46480,7 @@ onClick={async ()=>{
  : donutVariants.map(v=><option key={v.id} value={v.id}>{v.name} {php(v.selling_price)}</option>)
  }
  </select>
- <input type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="0" placeholder="0" />
+ <input aria-label={seasonalBoxFor(item)?'Quantity in boxes':'Quantity in pieces'} title={seasonalBoxFor(item)?'Whole boxes; price is per box':'Pieces'} step="1" type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="0" placeholder="0" />
  <span style={{ textAlign:'right', fontSize:'11px', color:'#888' }}>{php(retailPrice)}</span>
  <span style={{ textAlign:'right', fontSize:'11px', fontWeight:'bold', color:'#2d8a4e' }}>{php(invoicePrice)}</span>
  <button onClick={()=>setInvoiceItems(invoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>DEL</button>
@@ -47792,7 +47919,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </select>
  </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{ setInvoiceResellerId(r.id); await buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}> CREATE DELIVERY</button>
+ <button style={{...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{ if (sagsTransfersAvailable && String(r.name || '').trim().toLowerCase() === 'sags') { setActiveTab('posMonitor'); return } setInvoiceResellerId(r.id); await buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>{sagsTransfersAvailable && String(r.name || '').trim().toLowerCase() === 'sags' ? 'SAGS INTERNAL TRANSFER' : ' CREATE DELIVERY'}</button>
  <button type="button" style={{...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); startEditReseller(r) }}> EDIT</button>
  <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}> </button>
  </div>
@@ -50323,7 +50450,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
  <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File Overtime</h3>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
-  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 6, 2026, OT requires approval and is paid per eligible minute beyond the scheduled end. Full shifts carry a 60-minute unpaid meal break; short shifts use recorded breaks. No Meal Break filing is disabled. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
+  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 11, 2026, shifts up to five hours with no break punch have zero meal deduction. Longer unpunched shifts use the standard 60-minute meal deduction without blocking payroll. Approved No Meal Break exceptions still apply. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
  <label style={lblS}>Attendance Date Being Filed:</label>
  <input
@@ -50357,6 +50484,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
   style={inputStyle}
  >
   <option value="overtime">Overtime</option>
+  {usesShortShiftMealPolicy(otRequestDate) && <option value="meal_break">No Meal Break Review</option>}
 
  </select>
  {otRequestType === 'overtime' ? (
@@ -51271,6 +51399,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'7px 10px', background:'#ca1b1b', borderRadius:'9px' }}>
  {['Variant','Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
  </div>
+ <p style={{ fontSize:'11px', color:'#7a4d00' }}>Spooky Donuts quantities are BOXES: 6 pcs = 3 Shells + 3 Rings; 12 pcs = 5 Shells + 7 Rings. Your usual reseller pricing applies.</p>
  {resellerOrderItems.map((item,i)=>(
  <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderRadius:'9px', border:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>

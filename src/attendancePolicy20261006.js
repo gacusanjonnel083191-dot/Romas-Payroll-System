@@ -1,6 +1,11 @@
 export const ATTENDANCE_POLICY_EFFECTIVE_DATE = '2026-10-06'
 export const OVERTIME_THRESHOLD_POLICY_EFFECTIVE_DATE = '2026-10-11'
 export const EARLY_ARRIVAL_START_POLICY_EFFECTIVE_DATE = '2026-10-11'
+export const SHORT_SHIFT_MEAL_POLICY_EFFECTIVE_DATE = '2026-10-11'
+export const SHORT_SHIFT_MAX_MINUTES = 300
+export function usesShortShiftMealPolicy(date = '') {
+ return /^\d{4}-\d{2}-\d{2}$/.test(String(date).slice(0,10)) && String(date).slice(0,10) >= SHORT_SHIFT_MEAL_POLICY_EFFECTIVE_DATE
+}
 export function usesEarlyArrivalStartPolicy(date = '') {
  return /^\d{4}-\d{2}-\d{2}$/.test(String(date).slice(0,10)) && String(date).slice(0,10) >= EARLY_ARRIVAL_START_POLICY_EFFECTIVE_DATE
 }
@@ -28,6 +33,13 @@ export function payableOvertimeMinutes(minutes = 0, date = '') {
 export function policyBreakMinutes({date = '', spanMinutes = 0, recordedMinutes = 0, legacyOverride = null} = {}) {
  const span = Math.max(0, Number(spanMinutes) || 0)
  const recorded = Math.max(0, Number(recordedMinutes) || 0)
+ if (usesShortShiftMealPolicy(date)) {
+  if (span <= SHORT_SHIFT_MAX_MINUTES) return Math.min(span, recorded)
+  if (legacyOverride !== null) return Math.min(span, Math.max(0, Number(legacyOverride) || 0))
+  // Use the standard unpaid meal hour when a longer shift has no break punch.
+  // Approved exceptions above and recorded overbreak remain authoritative.
+  return Math.min(span, Math.max(60, recorded))
+ }
  const standard = !usesOvertimeThresholdPolicy(date) && usesMinuteAttendancePolicy(date) && span < 540 ? recorded : Math.max(60, recorded)
  return Math.min(span, !usesMinuteAttendancePolicy(date) && legacyOverride !== null ? Math.max(0, Number(legacyOverride) || 0) : standard)
 }

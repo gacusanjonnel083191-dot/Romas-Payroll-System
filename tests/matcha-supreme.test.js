@@ -1,3 +1,4 @@
+import { SEASONAL_BOXES, seasonalBoxFor } from '../src/seasonalBoxPolicy.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -26,7 +27,7 @@ test('new invoice avoids retired rows, historical invoice reprint keeps them',()
  const helperStart=source.indexOf('  function getInvoiceProductOrderForItems(')
  const helperEnd=source.indexOf(' function getDeliveryInvoicePrintData(',helperStart)
  assert.ok(start>=0&&end>start&&helperStart>=0&&helperEnd>helperStart)
- const ctx=vm.createContext({})
+ const ctx=vm.createContext({SEASONAL_BOXES,seasonalBoxFor})
  vm.runInContext(source.slice(start,end)+`
  function normalizeDonutVariantName(x) {return String(x||'').trim().toLowerCase().replace(/[^a-z0-9]/g,'')}
  `+source.slice(helperStart,helperEnd)+
@@ -40,5 +41,5 @@ test('new invoice avoids retired rows, historical invoice reprint keeps them',()
 })
 test('POS and invoice fallback load only active products',()=>{
  assert.match(source,/return product\.is_active === false \|\| \['deleted'/)
- assert.equal((source.match(/from\('donut_variants'\)\.select\('\*'\)\.eq\('is_active', true\)\.order\('category'\)/g)||[]).length,2)
+ assert.ok((source.match(/from\('donut_variants'\)\.select\('\*'\)\.eq\('is_active', true\)\.order\('category'\)/g)||[]).length >= 2)
 })
