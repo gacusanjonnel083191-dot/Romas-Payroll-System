@@ -1,15 +1,13 @@
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
+import {canPerformStaffAction} from './staff-access.mjs'
 import {
   cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
   validPhone, validRequestId,
 } from './rules.mjs'
 
-const STAFF_ROLES = new Set(['owner', 'supervisor', 'asst_supervisor'])
-const FORECAST_ROLES = new Set(['owner', 'manager', 'supervisor', 'asst_supervisor'])
 const SUBMISSIONS_ENABLED = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
 const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
@@ -41,19 +39,22 @@ async function sha256(value: string) {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function staffIdentity(admin: Client, request: Request, allowedRoles = STAFF_ROLES) {
+async function staffIdentity(admin: Client, request: Request) {
   const authorization = request.headers.get('authorization') || ''
   const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
   if (!token) return null
   const {data: userResult, error: userError} = await admin.auth.getUser(token)
   if (userError || !userResult.user) return null
   const {data: staff, error} = await admin.from('admin_users')
-    .select('id,role').eq('auth_user_id', userResult.user.id).eq('is_active', true).maybeSingle()
-  if (error || !staff || !allowedRoles.has(String(staff.role).toLowerCase())) return null
-  return staff
+    .select('id,full_name').eq('auth_user_id', userResult.user.id).eq('is_active', true).maybeSingle()
+  if (error || !staff) return null
+  const {data: permission, error: permissionError} = await admin.from('customer_order_staff_permissions')
+    .select('access_level').eq('admin_user_id', staff.id).maybeSingle()
+  if (permissionError) return null
+  return {...staff, accessLevel:permission?.access_level || 'view'}
 }
 
-async function orderDetail(admin: Client, orderId: string) {
+async function orderDetail(admin: Client, orderId: string, includeAudit = false) {
   const [{data: order, error: orderError}, {data: items, error: itemError}, {data: messages, error: messageError}] = await Promise.all([
     admin.from('customer_orders').select(ORDER_FIELDS).eq('id', orderId).single(),
     admin.from('customer_order_items').select('product_id,product_name,quantity,unit_label,pieces_per_unit,unit_price,line_total').eq('order_id', orderId).order('id'),
@@ -81,7 +82,22 @@ async function orderDetail(admin: Client, orderId: string) {
       }
     }
   }
-  return {...order, items: items || [], messages: messages || [], receipt}
+  if (!includeAudit) return {...order, items: items || [], messages: messages || [], receipt}
+  const {data: events, error: eventError} = await admin.from('customer_order_events')
+    .select('id,actor,actor_admin_user_id,old_status,new_status,note,created_at')
+    .eq('order_id', orderId).order('created_at').order('id')
+  if (eventError) return null
+  const actorIds = [...new Set((events || []).map(event => event.actor_admin_user_id).filter(Boolean))]
+  let actorNames = new Map<string,string>()
+  if (actorIds.length) {
+    const {data: actors, error: actorError} = await admin.from('admin_users')
+      .select('id,full_name').in('id', actorIds)
+    if (actorError) return null
+    actorNames = new Map((actors || []).map(actor => [actor.id, actor.full_name]))
+  }
+  return {...order, items: items || [], messages: messages || [], receipt,
+    events:(events || []).map(event => ({...event,
+      actor_name:event.actor_admin_user_id ? actorNames.get(event.actor_admin_user_id) || 'Former staff member' : null}))}
 }
 
 async function customerOrder(admin: Client, body: Body) {
@@ -164,8 +180,11 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   }
 
   if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
-  const staff = await staffIdentity(admin, request, action === 'staff-forecast' ? FORECAST_ROLES : STAFF_ROLES)
+  const staff = await staffIdentity(admin, request)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
+  if (!canPerformStaffAction(staff.accessLevel, action)) {
+    return reply(403, {ok:false, message:'Your customer-order access is view only.'})
+  }
 
   if (action === 'staff-forecast') {
     const date = cleanText(body.date, 10)
@@ -194,12 +213,12 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   if (action === 'staff-list') {
     const {data, error} = await admin.from('customer_orders').select(ORDER_FIELDS)
       .order('created_at', {ascending:false}).limit(100)
-    return error ? reply(503, {ok:false, message:'Order queue is unavailable.'}) : reply(200, {ok:true, orders:data || []})
+    return error ? reply(503, {ok:false, message:'Order queue is unavailable.'}) : reply(200, {ok:true, orders:data || [], accessLevel:staff.accessLevel})
   }
   const orderId = cleanText(body.orderId, 40)
   if (!validRequestId(orderId)) return reply(400, {ok:false, message:'Invalid order ID.'})
   if (action === 'staff-get') {
-    const detail = await orderDetail(admin, orderId)
+    const detail = await orderDetail(admin, orderId, true)
     return detail ? reply(200, {ok:true, order:detail}) : reply(404, {ok:false, message:'Order not found.'})
   }
   if (action === 'staff-phone-confirm') {
