@@ -12,15 +12,29 @@ export function cleanText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+export function earliestOrderDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone:'Asia/Manila', year:'numeric', month:'2-digit', day:'2-digit',
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  const today = `${values.year}-${values.month}-${values.day}`;
+  const daysAhead = now.getTime() >= Date.parse(`${today}T15:00:00+08:00`) ? 2 : 1;
+  return new Date(Date.parse(`${today}T12:00:00+08:00`) + daysAhead * 86_400_000).toISOString().slice(0,10);
+}
+
+export function isOrderDateAllowed(date, now = new Date()) {
+  return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && date >= earliestOrderDate(now);
+}
+
 export function validateSchedule(date, time, now = new Date()) {
-  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!isOrderDateAllowed(date, now)) return null;
   if (typeof time !== 'string' || !/^(0[8-9]|1[0-9]):(00|30)$|^20:00$/.test(time)) return null;
   const scheduled = new Date(`${date}T${time}:00+08:00`);
   if (Number.isNaN(scheduled.getTime())) return null;
   const dateInManila = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(scheduled);
-  if (dateInManila !== date || scheduled.getTime() < now.getTime() + 60 * 60_000) return null;
+  if (dateInManila !== date) return null;
   return scheduled.toISOString();
 }
 

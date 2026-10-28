@@ -4,7 +4,7 @@ import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
 import {canPerformStaffAction} from './staff-access.mjs'
 import {
-  cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
+  cleanText, isOrderDateAllowed, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
   validPhone, validRequestId,
 } from './rules.mjs'
 
@@ -139,6 +139,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
+    if (!isOrderDateAllowed(body.date)) return reply(422, {ok:false, message:'Same-day orders are unavailable. Order by 3:00 PM Philippine time for next-day pickup, or choose a later date.'})
     const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
     if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
     if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})

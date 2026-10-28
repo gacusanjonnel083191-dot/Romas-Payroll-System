@@ -13,10 +13,16 @@ export function phDate(now = new Date()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+export function earliestOrderDate(now = new Date()) {
+  const today = phDate(now);
+  const daysAhead = now.getTime() >= Date.parse(`${today}T15:00:00+08:00`) ? 2 : 1;
+  return phDate(new Date(Date.parse(`${today}T12:00:00+08:00`) + daysAhead * 86_400_000));
+}
+
 const PREVIEW_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'17:00'};
 
-export function availableSlots(date, now = new Date(), leadMinutes = 60, hours = PREVIEW_HOURS) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
+export function availableSlots(date, now = new Date(), hours = PREVIEW_HOURS) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < earliestOrderDate(now)) return [];
   if (!hours || !Array.isArray(hours.days)) return [];
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   if (!hours.days.includes(weekday)) return [];
@@ -26,7 +32,7 @@ export function availableSlots(date, now = new Date(), leadMinutes = 60, hours =
     const mm = String(minutes % 60).padStart(2, '0');
     const value = `${hh}:${mm}`;
     const at = new Date(`${date}T${value}:00+08:00`);
-    if (value >= hours.open && value <= hours.close && at.getTime() >= now.getTime() + leadMinutes * 60_000) slots.push(value);
+    if (value >= hours.open && value <= hours.close && !Number.isNaN(at.getTime()) && phDate(at) === date) slots.push(value);
   }
   return slots;
 }
