@@ -1,4 +1,3 @@
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
