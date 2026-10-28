@@ -37329,6 +37329,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </button>
  )
  }) }
+ {ONLINE_FORECAST_ENABLED && ['owner','supervisor','asst_supervisor'].includes(normalizeAdminRole(adminRole)) && (
+ <a href="/public-ordering-staff.html" target="_blank" rel="noopener noreferrer" aria-label="Open customer order queue in a new tab" style={{ padding:'10px 12px', borderRadius:'8px', color:'rgba(255,255,255,0.65)', textDecoration:'none', display:'flex', alignItems:'center', gap:'10px' }}>
+ <span style={{ fontSize:'16px', flexShrink:0 }}>🛍️</span><span style={{ fontSize:'12px', fontWeight:'500' }}>Customer Orders ↗</span>
+ </a>
+ )}
  </div>
  {/* Bottom Actions */}
  <div style={{ padding:'10px 10px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', display:'flex', flexDirection:'column', gap:'4px' }}>
