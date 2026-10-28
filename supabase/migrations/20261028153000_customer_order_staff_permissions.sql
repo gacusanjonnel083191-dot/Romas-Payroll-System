@@ -14,15 +14,16 @@ grant select on public.customer_order_staff_permissions to service_role;
 -- their actor ID even if an administrator's display name changes later.
 revoke update, delete on public.customer_order_events from service_role;
 
--- These IDs are the five verified main-system accounts. On a separate test
--- project, only matching existing accounts are inserted.
+-- Match the five verified main-system accounts by name and existing role.
+-- On a separate test project, only matching existing accounts are inserted.
 insert into public.customer_order_staff_permissions (admin_user_id, access_level)
 select a.id, allowed.access_level
 from (values
-  ('213df393-6ae8-4e39-bf2a-c767a42d6258'::uuid, 'full'), -- Jonnel
-  ('ecb83890-f0de-4d21-91a0-3e4186db27e9'::uuid, 'full'), -- Sheryl
-  ('93057d4b-c43f-4a0a-8e4a-82d6674617ce'::uuid, 'full'), -- Myra
-  ('83556dbf-987a-4753-ad73-b0f69afce964'::uuid, 'view'), -- Francis
-  ('3614ba50-3bc8-44b0-a27b-14a1d37e9180'::uuid, 'view')  -- Arlyn
-) as allowed(admin_user_id, access_level)
-join public.admin_users a on a.id = allowed.admin_user_id;
+  ('jonnel gacusan', 'owner', 'full'),
+  ('sheryl rosal', 'payroll', 'full'),
+  ('myra romero', 'hr', 'full'),
+  ('francis galleto', 'asst_supervisor', 'view'),
+  ('arlyn verano', 'supervisor', 'view')
+) as allowed(full_name, role, access_level)
+join public.admin_users a on lower(trim(a.full_name)) = allowed.full_name
+  and lower(a.role) = allowed.role;
