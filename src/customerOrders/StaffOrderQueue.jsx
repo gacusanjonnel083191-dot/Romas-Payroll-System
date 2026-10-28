@@ -3,10 +3,6 @@ import {createClient} from '@supabase/supabase-js'
 
 const url = import.meta.env.VITE_SUPABASE_URL || ''
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
-const endpoint = url ? `${url.replace(/\/$/, '')}/functions/v1/public-ordering` : ''
-const supabase = url && key ? createClient(url, key, {
-  auth: {persistSession:true, autoRefreshToken:true},
-}) : null
 const money = value => `₱${Number(value || 0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2})}`
 const when = value => value ? new Intl.DateTimeFormat('en-PH', {
   timeZone:'Asia/Manila', dateStyle:'medium', timeStyle:'short',
@@ -18,13 +14,13 @@ const ACTIONS = {
   ready:['out_for_delivery','cancelled'],
 }
 
-async function call(action, payload = {}) {
-  if (!supabase) throw new Error('Supabase environment variables are missing.')
-  const {data:{session}} = await supabase.auth.getSession()
+async function call(client, serviceUrl, publishableKey, action, payload = {}) {
+  if (!client || !serviceUrl || !publishableKey) throw new Error('Supabase environment variables are missing.')
+  const {data:{session}} = await client.auth.getSession()
   if (!session?.access_token) throw new Error('Sign in to review orders.')
-  const response = await fetch(endpoint, {
+  const response = await fetch(`${serviceUrl.replace(/\/$/, '')}/functions/v1/public-ordering`, {
     method:'POST', headers:{
-      'Content-Type':'application/json', apikey:key,
+      'Content-Type':'application/json', apikey:publishableKey,
       Authorization:`Bearer ${session.access_token}`,
     }, body:JSON.stringify({action,...payload}),
   })
@@ -41,7 +37,11 @@ function Login() {
   </div></main>
 }
 
-export default function StaffOrderQueue() {
+export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false}) {
+  const client = useMemo(() => providedClient || (url && key ? createClient(url, key, {
+    auth: {persistSession:true, autoRefreshToken:true},
+  }) : null), [providedClient])
+  const request = useCallback((action, payload) => call(client, serviceUrl, publishableKey, action, payload), [client, serviceUrl, publishableKey])
   const [session,setSession] = useState(null)
   const [accessLevel,setAccessLevel] = useState('view')
   const [orders,setOrders] = useState([])
@@ -64,16 +64,16 @@ export default function StaffOrderQueue() {
   const selected = useMemo(()=>orders.find(order=>order.id===selectedId),[orders,selectedId])
 
   useEffect(()=>{
-    if (!supabase) return undefined
-    supabase.auth.getSession().then(({data})=>setSession(data.session))
-    const {data:{subscription}} = supabase.auth.onAuthStateChange((_event,next)=>setSession(next))
+    if (!client) return undefined
+    client.auth.getSession().then(({data})=>setSession(data.session))
+    const {data:{subscription}} = client.auth.onAuthStateChange((_event,next)=>setSession(next))
     return ()=>subscription.unsubscribe()
-  },[])
+  },[client])
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await call('staff-list')
+      const result = await request('staff-list')
       setOrders(result.orders)
       setAccessLevel(result.accessLevel)
       setSelectedId(current=>result.orders.some(order=>order.id===current)
@@ -83,36 +83,36 @@ export default function StaffOrderQueue() {
       setError('')
     } catch (failure) { setError(failure.message) }
     finally { setLoading(false) }
-  },[])
+  },[request])
 
   useEffect(()=>{
     if(!session)return undefined
     let active=true
-    call('staff-list').then(result=>{
+    request('staff-list').then(result=>{
       if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
-  },[session])
+  },[session,request])
   useEffect(()=>{
     if (!session || !selectedId) return undefined
     let active = true
-    call('staff-get',{orderId:selectedId}).then(result=>{
+    request('staff-get',{orderId:selectedId}).then(result=>{
       if(active){setDetail(result.order);setError('')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
-  },[session,selectedId,detailRefresh])
+  },[session,selectedId,detailRefresh,request])
 
   async function updateStatus(status) {
     if (!detail || busy) return
     setBusy(true)
     try {
-      await call('staff-status',{
+      await request('staff-status',{
         orderId:detail.id,expectedStatus:detail.status,status,note:statusNote,
       })
       setStatusNote('')
       await refresh()
-      const result = await call('staff-get',{orderId:detail.id})
+      const result = await request('staff-get',{orderId:detail.id})
       setDetail(result.order)
     } catch(failure){setError(failure.message)}
     finally{setBusy(false)}
@@ -123,10 +123,10 @@ export default function StaffOrderQueue() {
     if (!detail || busy || !phoneCallConfirmed || detail.status!=='pending_confirmation') return
     setBusy(true);setError('')
     try {
-      await call('staff-phone-confirm',{orderId:detail.id})
+      await request('staff-phone-confirm',{orderId:detail.id})
       setPhoneCallConfirmed(false)
       await refresh()
-      const result = await call('staff-get',{orderId:detail.id})
+      const result = await request('staff-get',{orderId:detail.id})
       setDetail(result.order)
     } catch(failure){setError(failure.message)}
     finally{setBusy(false)}
@@ -137,9 +137,9 @@ export default function StaffOrderQueue() {
     if (!detail || !message.trim() || busy) return
     setBusy(true)
     try {
-      await call('staff-message',{orderId:detail.id,message:message.trim()})
+      await request('staff-message',{orderId:detail.id,message:message.trim()})
       setMessage('')
-      const result = await call('staff-get',{orderId:detail.id})
+      const result = await request('staff-get',{orderId:detail.id})
       setDetail(result.order)
     } catch(failure){setError(failure.message)}
     finally{setBusy(false)}
@@ -150,7 +150,7 @@ export default function StaffOrderQueue() {
     if (!detail || busy || !paymentConfirmed) return
     setBusy(true);setError('')
     try {
-      await call('staff-pay',{
+      await request('staff-pay',{
         orderId:detail.id,paymentMethod,
         referenceNumber:paymentMethod==='Cash'?'':paymentReference.trim(),
       })
@@ -165,7 +165,7 @@ export default function StaffOrderQueue() {
     if (!detail || busy || !refundConfirmed || refundReason.trim().length < 10) return
     setBusy(true);setError('')
     try {
-      await call('staff-refund',{
+      await request('staff-refund',{
         orderId:detail.id,refundMethod,reason:refundReason.trim(),
         referenceNumber:refundMethod==='Cash'?'':refundReference.trim(),
       })
@@ -175,16 +175,16 @@ export default function StaffOrderQueue() {
     finally{setBusy(false)}
   }
 
-  if (!supabase) return <main className="staff-login"><div className="staff-panel">
+  if (!client) return <main className="staff-login"><div className="staff-panel">
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
   </div></main>
   if (!session) return <Login />
 
-  return <main className="staff-app">
+  return <main className={`staff-app${embedded?' staff-embedded':''}`}>
     <header><div><p className="staff-kicker">ROMA'S DONUTS · STAFF</p><h1>Customer orders</h1><p>{accessLevel==='full'?'Full access':'View only'}</p></div>
       <div className="staff-header-actions"><button onClick={()=>void refresh()} disabled={loading}>Refresh</button>
-        <a href="/">Main system</a><button onClick={()=>void supabase.auth.signOut()}>Sign out of main system</button></div></header>
+        {!embedded && <><a href="/">Main system</a><button onClick={()=>void client.auth.signOut()}>Sign out of main system</button></>}</div></header>
     {error && <p role="alert" className="staff-error">{error}</p>}
     <div className="staff-layout">
       <section className="staff-panel staff-list" aria-label="Order queue">
