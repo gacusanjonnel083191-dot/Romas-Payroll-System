@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useMemo, useState} from 'react'
 import {createClient} from '@supabase/supabase-js'
+import {callStaffOrdering} from './staffApi.mjs'
 
 const url = import.meta.env.VITE_SUPABASE_URL || ''
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
@@ -14,21 +15,6 @@ const ACTIONS = {
   ready:['out_for_delivery','cancelled'],
 }
 
-async function call(client, serviceUrl, publishableKey, action, payload = {}) {
-  if (!client || !serviceUrl || !publishableKey) throw new Error('Supabase environment variables are missing.')
-  const {data:{session}} = await client.auth.getSession()
-  if (!session?.access_token) throw new Error('Sign in to review orders.')
-  const response = await fetch(`${serviceUrl.replace(/\/$/, '')}/functions/v1/public-ordering`, {
-    method:'POST', headers:{
-      'Content-Type':'application/json', apikey:publishableKey,
-      Authorization:`Bearer ${session.access_token}`,
-    }, body:JSON.stringify({action,...payload}),
-  })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok || !result.ok) throw new Error(result.message || 'The ordering service is unavailable.')
-  return result
-}
-
 function Login() {
   return <main className="staff-login"><div className="staff-panel">
     <p className="staff-kicker">ROMA'S DONUTS</p><h1>Customer order queue</h1>
@@ -37,11 +23,11 @@ function Login() {
   </div></main>
 }
 
-export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false}) {
+export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false, onOrdersChange}) {
   const client = useMemo(() => providedClient || (url && key ? createClient(url, key, {
     auth: {persistSession:true, autoRefreshToken:true},
   }) : null), [providedClient])
-  const request = useCallback((action, payload) => call(client, serviceUrl, publishableKey, action, payload), [client, serviceUrl, publishableKey])
+  const request = useCallback((action, payload) => callStaffOrdering(client, serviceUrl, publishableKey, action, payload), [client, serviceUrl, publishableKey])
   const [session,setSession] = useState(null)
   const [accessLevel,setAccessLevel] = useState('view')
   const [orders,setOrders] = useState([])
@@ -75,6 +61,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     try {
       const result = await request('staff-list')
       setOrders(result.orders)
+      onOrdersChange?.(result.orders)
       setAccessLevel(result.accessLevel)
       setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')
@@ -83,17 +70,17 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       setError('')
     } catch (failure) { setError(failure.message) }
     finally { setLoading(false) }
-  },[request])
+  },[request,onOrdersChange])
 
   useEffect(()=>{
     if(!session)return undefined
     let active=true
     request('staff-list').then(result=>{
-      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);onOrdersChange?.(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
-  },[session,request])
+  },[session,request,onOrdersChange])
   useEffect(()=>{
     if (!session || !selectedId) return undefined
     let active = true

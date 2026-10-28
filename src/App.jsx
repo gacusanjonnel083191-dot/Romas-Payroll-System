@@ -12,8 +12,10 @@ import {
 } from './productionForecastPolicy.js'
 import {summarizeAcceptedOnlineOrders} from './customerOrderForecast.js'
 import StaffOrderQueue from './customerOrders/StaffOrderQueue.jsx'
+import {callStaffOrdering} from './customerOrders/staffApi.mjs'
+import {countActiveCustomerOrders} from './customerOrders/orderNotifications.mjs'
 import './customerOrders/embedded.css'
-import { Component, Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
@@ -7280,6 +7282,8 @@ export default function App() {
  const [adminAuthPassword, setAdminAuthPassword] = useState('')
  const [adminAuthUser, setAdminAuthUser] = useState(null)
  const [adminAuthProfile, setAdminAuthProfile] = useState(null)
+ const [customerOrderCount, setCustomerOrderCount] = useState(0)
+ const updateCustomerOrderCount = useCallback(orders => setCustomerOrderCount(countActiveCustomerOrders(orders)), [])
  const [returnsMonitorData, setReturnsMonitorData] = useState(null)
  const [returnsMonitorLoading, setReturnsMonitorLoading] = useState(false)
  const [returnsMonitorError, setReturnsMonitorError] = useState('')
@@ -8486,6 +8490,31 @@ export default function App() {
    })
   return () => { cancelled = true }
  }, [adminMode, activeTab, salesView, forecastDate, onlineForecastRefresh])
+
+ useEffect(() => {
+  if (!ONLINE_FORECAST_ENABLED || !adminMode || !adminAuthUser?.id) {
+   setCustomerOrderCount(0)
+   return undefined
+  }
+  let active = true
+  const refresh = async () => {
+   try {
+    const result = await callStaffOrdering(supabase, supabaseUrl, supabaseKey, 'staff-list')
+    if (active) updateCustomerOrderCount(result.orders)
+   } catch {
+    if (active) setCustomerOrderCount(0)
+   }
+  }
+  void refresh()
+  const timer = window.setInterval(() => { if (!document.hidden) void refresh() }, 60_000)
+  const onFocus = () => { void refresh() }
+  window.addEventListener('focus', onFocus)
+  return () => {
+   active = false
+   window.clearInterval(timer)
+   window.removeEventListener('focus', onFocus)
+  }
+ }, [adminMode, adminAuthUser?.id, updateCustomerOrderCount])
 
  useEffect(() => {
   if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
@@ -37416,14 +37445,17 @@ setActiveTab('sales')
  {visibleSections.map(section => {
  const isActive = currentSection.key === section.key
                   const shouldBlinkThisPayablesButton = section.key==='payablesMain' && shouldBlinkPayablesMainButton
+ const shouldBlinkThisCustomerOrderButton = section.key==='customerOrders' && customerOrderCount>0
+ const shouldBlinkSidebarButton = shouldBlinkThisPayablesButton || shouldBlinkThisCustomerOrderButton
  const pendingLeaveCount = leaveRequests.filter(r=>r.status==='pending').length
 const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 (section.key==='payroll' && (cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
 (section.key==='sales' && ((pendingExpenses>0 && adminRole==='owner') || pendingInvoiceDeletionRequests.length>0)) || (section.key==='payablesMain' && ownerDeadlineSummary.warningCount>0)
  return (
- <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:shouldBlinkThisPayablesButton?'#fdd412':isActive?'#ca1b1b':'transparent', color:shouldBlinkThisPayablesButton?'#1a1a2e':isActive?'white':'rgba(255,255,255,0.65)', animation:shouldBlinkThisPayablesButton?'payablesSidebarBlink 0.8s ease-in-out infinite':'none', boxShadow:shouldBlinkThisPayablesButton?'0 0 16px rgba(253,212,18,0.9)':'none', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
+ <button key={section.key} aria-label={shouldBlinkThisCustomerOrderButton?`Customer Orders, ${customerOrderCount} active orders`:section.label} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:shouldBlinkSidebarButton?'#fdd412':isActive?'#ca1b1b':'transparent', color:shouldBlinkSidebarButton?'#1a1a2e':isActive?'white':'rgba(255,255,255,0.65)', animation:shouldBlinkSidebarButton?'payablesSidebarBlink 0.8s ease-in-out infinite':'none', boxShadow:shouldBlinkSidebarButton?'0 0 16px rgba(253,212,18,0.9)':'none', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
  <span style={{ fontSize:'16px', flexShrink:0 }}>{section.icon}</span>
  <span style={{ fontSize:'12px', fontWeight:isActive?'bold':'500', flex:1 }}>{section.label}</span>
+ {shouldBlinkThisCustomerOrderButton && <span style={{ background:'#fff', color:'#9b1117', borderRadius:'10px', padding:'2px 6px', minWidth:'18px', textAlign:'center', fontSize:'10px', fontWeight:'900' }}>{customerOrderCount>=100?'99+':customerOrderCount}</span>}
  {hasBadge && <span style={{ background:'#fdd412', color:'#1a1a2e', borderRadius:'10px', padding:'1px 6px', fontSize:'9px', fontWeight:'bold' }}>!</span>}
  </button>
  )
@@ -37477,7 +37509,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
- {activeTab==='customerOrders' && ONLINE_FORECAST_ENABLED && <div className="customer-order-module"><StaffOrderQueue client={supabase} serviceUrl={supabaseUrl} publishableKey={supabaseKey} embedded /></div>}
+ {activeTab==='customerOrders' && ONLINE_FORECAST_ENABLED && <div className="customer-order-module"><StaffOrderQueue client={supabase} serviceUrl={supabaseUrl} publishableKey={supabaseKey} onOrdersChange={updateCustomerOrderCount} embedded /></div>}
  {activeTab==='cartLoans' && isOwnerRole && <RollingCartLoans supabase={supabase} today={today} />}
 
  {/* DASHBOARD */}

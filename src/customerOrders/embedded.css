@@ -24,6 +24,10 @@
 .customer-order-module .staff-panel button:disabled { opacity:.5; cursor:not-allowed; }
 .customer-order-module .staff-error { background:#fff0ed; color:#921919; border:1px solid #d99; padding:1rem; border-radius:9px; }
 .customer-order-module .staff-app header { display:flex; justify-content:space-between; gap:1rem; align-items:center; }
+.customer-order-module .staff-app > header { color:#fff; }
+.customer-order-module .staff-app > header h1 { color:#fff !important; }
+.customer-order-module .staff-app > header p { color:#f5e9db; }
+.customer-order-module .staff-app > header .staff-kicker { color:#fdd412; }
 .customer-order-module .staff-header-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
 .customer-order-module .staff-layout { display:grid; grid-template-columns:minmax(250px,330px) minmax(0,1fr); gap:1rem; }
 .customer-order-module .staff-list { max-height:calc(100vh - 220px); overflow:auto; }
