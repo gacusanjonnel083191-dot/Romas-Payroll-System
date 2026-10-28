@@ -28,7 +28,10 @@ This document prepares a production release; it does not authorize one.
 - The standard `npm run build` passes. The customer-order, forecast, ledger,
   refund, staff-call, and pickup-release tests pass locally. The main admin
   navigation now includes a role-limited link to the staff order queue when
-  the ordering feature flag is enabled.
+  the ordering feature flag is enabled. The main login screen also links to
+  the customer menu under that flag. Latest main (`bca9e78`) was merged into
+  this branch; the combined Halloween box, SAGS transfer, and online forecast
+  passed 57 focused tests on 28 October 2026.
 - The current main ledger has a permissive `public` policy. The prepared
   `secure_online_payment_ledger` migration replaces it with authenticated
   owner/manager/HR read and insert policies. Verify the existing sales screens
@@ -72,7 +75,8 @@ This document prepares a production release; it does not authorize one.
 6. Review and deliver this branch to the main Vercel project. Add production
    `VITE_PUBLIC_ORDERING_ENABLED=true` while retaining its existing production
    Supabase URL and publishable key. The Vite build includes the customer page
-   and staff queue. Verify the admin Customer Orders link, authorized staff
+   and staff queue. Verify the login screen's customer-menu link, the admin
+   Customer Orders link, authorized staff
    sign-in, the accepted-order production forecast, and existing sales screens.
    Keep customer submissions disabled during this verification.
 7. After a final owner review of the customer page, pickup details, staff
