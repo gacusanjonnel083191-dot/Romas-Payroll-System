@@ -110,10 +110,23 @@ until the call is recorded. The staff queue asks the team member to confirm
 the customer's name, order, pickup location, and requested time by phone.
 The migration and Edge Function version 14 are deployed only to staging. A
 rolled-back staging test confirmed that acceptance is blocked before the call,
-allowed after it, and that a duplicate confirmation is rejected. Staging
-reports `phoneVerificationMethod: 'staff_call'` and
-`orderingEnabled: false`. No SMS provider is needed for this workflow. A
-real customer submission and staff call have not yet been tested end to end.
-Production, GitHub, and Vercel remain unchanged. Staff calls confirm the
-request but do not prove ownership of the phone number automatically; review
-abuse and impersonation controls before public launch.
+allowed after it, and that a duplicate confirmation is rejected. On 28 October
+2026, a browser test submitted one clearly labeled synthetic six-piece Shells
+pickup request for the next day. The staff queue disabled acceptance until a
+simulated phone confirmation was recorded; acceptance then succeeded. No real
+call or payment took place. The order was cancelled and its one item and four
+events were removed; the older refund sample was left untouched. The public
+staging configuration was verified afterward with `orderingEnabled: false`,
+four pickup locations, and `phoneVerificationMethod: 'staff_call'`. No SMS
+provider is needed for this workflow. A real customer submission and staff
+call have not yet been tested. Production, GitHub, and Vercel remain unchanged.
+Staff calls confirm the request but do not prove ownership of the phone number
+automatically; review abuse and impersonation controls before public launch.
+
+The next release gate is a production migration and deployment review. A
+read-only check on 28 October 2026 found no `customer_orders` or
+`customer_order_rate_limits` tables in the production project. Its existing
+`daily_sales_online_payments` table has the base columns expected by the
+customer-order payment migration. The standard `npm run build` completed and
+all 30 targeted ordering tests passed locally. These checks do not authorize
+or substitute for a production migration, deployment, backup, or a live order.
