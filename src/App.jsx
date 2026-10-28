@@ -1,3 +1,5 @@
+import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
+import { canViewEmployeeDeliverySummary } from './employeeDeliverySummaryPolicy.js'
 import { SEASONAL_BOXES, seasonalBoxFor, assertWholeSeasonalBoxes, physicalDonutQuantity, expandSeasonalProductionItems, seasonalPackingSummary } from './seasonalBoxPolicy.js'
 import { dailyPosClosing } from './posClosingSummary.js'
 import StaffScheduler from './StaffScheduler.jsx'
@@ -7235,6 +7237,7 @@ export default function App() {
  const [showMyLeaves, setShowMyLeaves] = useState(false)
  const [myLeaves, setMyLeaves] = useState([])
  const [myLeavesLoading, setMyLeavesLoading] = useState(false)
+ const [showDeliverySummary, setShowDeliverySummary] = useState(false)
  const [showPayslips, setShowPayslips] = useState(false)
  const [showCashAdvances, setShowCashAdvances] = useState(false)
  const [showCashAdvanceRequest, setShowCashAdvanceRequest] = useState(false)
@@ -9415,6 +9418,7 @@ setInvoiceDeletionReviewNotes({})
 
  function logout() {
  clearEmployeeCashAdvanceSession()
+ setShowDeliverySummary(false)
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
@@ -9422,6 +9426,7 @@ setInvoiceDeletionReviewNotes({})
  setShowMySops(false); setMySopDocuments([]); setMySopAckRecords([]); setViewingMySop(null)
  }
  function closeAllPanels() {
+ setShowDeliverySummary(false)
  setShowLeaveRequest(false); setShowPayslips(false)
  setShowCashAdvances(false); setShowCashAdvanceRequest(false); setShowMyAttendance(false); setShowOTRequest(false)
  setShowMyLeaves(false); setShowMySops(false); setViewingMySop(null)
@@ -50390,6 +50395,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  { label:'File Overtime', icon:' ', action:toggleTimeAdjustmentFilingPanel, disabled:false },
  { label:getEmployeeLeaveInfo(employee).buttonLabel, icon:' ', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
  { label:'Cash Advance', icon:' ', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
+ ...(canViewEmployeeDeliverySummary(employee) ? [{ label:'Delivery Summary', icon:' ', action:()=>{ closeAllPanels(); setShowDeliverySummary(!showDeliverySummary) }, disabled:false }] : []),
  { label:'My Payslips', icon:' ', action:()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }, disabled:false },
  { label:'Attendance', icon:' ', action:()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }, disabled:false },
  { label:'Fingerprint', icon:' ', action:()=>registerPasskeyForEmployee(), disabled:!passkeySupported||passkeyLoading },
@@ -50408,6 +50414,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  Admin panel access now requires the Owner/Admin Login tab with email and password.
  </div>
  )}
+
+ {showDeliverySummary && canViewEmployeeDeliverySummary(employee) && <EmployeeDeliverySummary key={employee.id} supabase={supabase} sessionToken={employeeCashAdvanceSessionToken} />}
 
  {showMySops && (
  <div style={{ background:'#fffdf1', padding:'14px', borderRadius:'12px', border:'1.5px solid #FDD412', marginBottom:'8px' }}>
