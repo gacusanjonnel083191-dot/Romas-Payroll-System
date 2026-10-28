@@ -20,7 +20,7 @@ function headers(origin: string | null) {
     .split(',').map(value => value.trim()).filter(Boolean)
   return {
     'Access-Control-Allow-Origin': origin && allowed.includes(origin) ? origin : '',
-    'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-retry-count',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Cache-Control': 'no-store',
     Vary: 'Origin',
