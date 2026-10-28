@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import catalog from './catalog.json' with {type:'json'};
-import {DELIVERY_COVERAGE, PICKUP_HOURS, validatePickupSchedule, pricedItems, validPhone, validRequestId, validAccessToken} from './rules.mjs';
+import {DELIVERY_COVERAGE, PICKUP_HOURS, earliestOrderDate, isOrderDateAllowed, validatePickupSchedule, pricedItems, validPhone, validRequestId, validAccessToken} from './rules.mjs';
 import {PRODUCTS} from '../../../customer-ordering-preview/catalog.mjs';
 
 test('server catalog matches every preview SKU and price', () => {
@@ -19,15 +19,31 @@ test('the server recalculates quantities and rejects altered prices', () => {
   assert.equal(pricedItems([{id:'double-choco',quantity:1000}],catalog),null);
 });
 
-test('server enforces each pickup point’s Manila days, hours and one-hour lead', () => {
+test('server rejects same-day pickup and closes next-day orders at 3 PM Manila time', () => {
+  const before = new Date('2026-10-15T14:59:59+08:00');
+  const cutoff = new Date('2026-10-15T15:00:00+08:00');
+  const gas = 'Dagupan City - Malued (Centrum Gas)';
+  assert.equal(earliestOrderDate(before), '2026-10-16');
+  assert.equal(earliestOrderDate(cutoff), '2026-10-17');
+  assert.equal(isOrderDateAllowed('2026-10-15', before), false);
+  assert.equal(isOrderDateAllowed('2026-10-16', before), true);
+  assert.equal(isOrderDateAllowed('2026-10-16', cutoff), false);
+  assert.equal(validatePickupSchedule(gas, '2026-10-15', '20:00', before), null);
+  assert(validatePickupSchedule(gas, '2026-10-16', '08:00', before));
+  assert.equal(validatePickupSchedule(gas, '2026-10-16', '08:00', cutoff), null);
+  assert(validatePickupSchedule(gas, '2026-10-17', '08:00', cutoff));
+  assert.equal(earliestOrderDate(new Date('2026-12-31T15:00:00+08:00')), '2027-01-02');
+});
+
+test('server enforces each pickup point’s Manila days and hours', () => {
   const now = new Date('2026-10-15T08:00:00+08:00');
   const novo='Dagupan City - Arellano St. (Novo)';
   const pamma='Dagupan City - Perez Blvd. (PAMMA)';
   const school='Dagupan City - Malued (St. Albert School)';
   const gas='Dagupan City - Malued (Centrum Gas)';
   assert.equal(Object.keys(PICKUP_HOURS).length,4);
-  assert.equal(validatePickupSchedule(novo,'2026-10-15','09:00',now),'2026-10-15T01:00:00.000Z');
-  assert.equal(validatePickupSchedule(novo,'2026-10-15','08:30',now),null);
+  assert.equal(validatePickupSchedule(novo,'2026-10-16','09:00',now),'2026-10-16T01:00:00.000Z');
+  assert.equal(validatePickupSchedule(novo,'2026-10-16','08:30',now),null);
   assert(validatePickupSchedule(novo,'2026-10-17','18:00',now)); // Saturday close
   assert.equal(validatePickupSchedule(novo,'2026-10-18','10:00',now),null); // Sunday
   assert.equal(validatePickupSchedule(pamma,'2026-10-17','10:00',now),null); // Saturday
@@ -38,7 +54,7 @@ test('server enforces each pickup point’s Manila days, hours and one-hour lead
   assert(validatePickupSchedule(gas,'2026-10-18','20:00',now)); // Sunday close
   assert.equal(validatePickupSchedule(gas,'2026-10-18','20:30',now),null);
   assert.equal(validatePickupSchedule(gas,'2026-02-30','10:00',now),null);
-  assert.equal(validatePickupSchedule(gas,'2026-10-15','07:30',now),null);
+  assert.equal(validatePickupSchedule(gas,'2026-10-16','07:30',now),null);
   assert.equal(validatePickupSchedule('Dagupan City','2026-10-16','10:00',now),null);
 });
 

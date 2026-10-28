@@ -1,19 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {availableSlots, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS} from '../logic.mjs';
+import {availableSlots, earliestOrderDate, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS} from '../logic.mjs';
 import {PRODUCTS, findProduct, catalogCards} from '../catalog.mjs';
-import {PICKUP_HOURS} from '../../supabase/functions/public-ordering/rules.mjs';
+import {PICKUP_HOURS, earliestOrderDate as serverEarliestOrderDate} from '../../supabase/functions/public-ordering/rules.mjs';
 
-test('same-day slots respect one-hour lead time and 5 PM close', () => {
-  const now = new Date('2026-10-13T15:10:00+08:00');
-  assert.deepEqual(availableSlots('2026-10-13', now), ['16:30', '17:00']);
-  assert.deepEqual(availableSlots('2026-10-14', now)[0], '08:00');
-  assert.deepEqual(availableSlots('2026-10-12', now), []);
+test('checkout date and slots follow the Manila 3 PM next-day cutoff', () => {
+  const before = new Date('2026-10-13T14:59:59+08:00');
+  const cutoff = new Date('2026-10-13T15:00:00+08:00');
+  assert.equal(earliestOrderDate(before), '2026-10-14');
+  assert.equal(earliestOrderDate(cutoff), '2026-10-15');
+  assert.equal(earliestOrderDate(before), serverEarliestOrderDate(before));
+  assert.equal(earliestOrderDate(cutoff), serverEarliestOrderDate(cutoff));
+  assert.deepEqual(availableSlots('2026-10-13', before), []);
+  assert.equal(availableSlots('2026-10-14', before)[0], '08:00');
+  assert.deepEqual(availableSlots('2026-10-14', cutoff), []);
+  assert.equal(availableSlots('2026-10-15', cutoff)[0], '08:00');
 });
 
 test('checkout slots match the four confirmed pickup schedules', () => {
   const now=new Date('2026-10-15T08:00:00+08:00');
-  const slots=(name,date)=>availableSlots(date,now,60,PICKUP_HOURS[name]);
+  const slots=(name,date)=>availableSlots(date,now,PICKUP_HOURS[name]);
   const novo='Dagupan City - Arellano St. (Novo)';
   const pamma='Dagupan City - Perez Blvd. (PAMMA)';
   const school='Dagupan City - Malued (St. Albert School)';
@@ -27,7 +33,7 @@ test('checkout slots match the four confirmed pickup schedules', () => {
   assert.equal(slots(school,'2026-10-17').at(-1),'18:00');
   assert.deepEqual(slots(school,'2026-10-18'),[]);
   assert.equal(slots(gas,'2026-10-18').at(-1),'20:00');
-  assert.deepEqual(availableSlots('2026-10-18',now,60,null),[]);
+  assert.deepEqual(availableSlots('2026-10-18',now,null),[]);
 });
 
 test('approved delivery rate charges each additional started kilometer', () => {
