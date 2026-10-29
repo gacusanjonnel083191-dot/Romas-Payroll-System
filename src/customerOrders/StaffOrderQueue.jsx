@@ -307,7 +307,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
               {automaticDeliveryQuoteAvailable ? <>
                 {routeLoading && <p role="status">Calculating driving route and delivery fee…</p>}
                 {routeError && <p role="alert" className="staff-error">{routeError}</p>}
-                {deliveryRoute?.origin===deliveryOrigin && <p role="status"><strong>{deliveryRoute.roadKm} road km · {money(deliveryRoute.deliveryFee)} delivery fee · {money(deliveryRoute.total)} order total</strong><br /><small>Review this quote before saving. The route will be checked again when saved.</small></p>}
+                {deliveryRoute?.origin===deliveryOrigin && <p role="status"><strong>{deliveryRoute.roadKm} road km · {money(deliveryRoute.deliveryFee)} delivery fee · {money(deliveryRoute.total)} order total</strong><br /><small>Road route by HeiGIT openrouteservice using OpenStreetMap data. Review this quote before saving; the route is checked again when saved.</small></p>}
               </> : <label>Verified road distance (km)<input type="number" min="0" max="100" step="0.001" value={roadKm} onChange={event=>setRoadKm(event.target.value)} required /></label>}
               <button disabled={busy||!deliveryOrigin||(automaticDeliveryQuoteAvailable?(routeLoading||!deliveryRoute||deliveryRoute.origin!==deliveryOrigin):(roadKm===''||Number(roadKm)<0||Number(roadKm)>100))}>{busy?'Saving…':'Save delivery quote'}</button>
             </form>}
