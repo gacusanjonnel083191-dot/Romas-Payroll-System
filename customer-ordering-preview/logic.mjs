@@ -20,6 +20,7 @@ export function earliestOrderDate(now = new Date()) {
 }
 
 const PREVIEW_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'17:00'};
+export const DELIVERY_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'20:00'};
 
 export function availableSlots(date, now = new Date(), hours = PREVIEW_HOURS) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < earliestOrderDate(now)) return [];
