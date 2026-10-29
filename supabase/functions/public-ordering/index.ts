@@ -152,7 +152,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const scope = action === 'address-suggest' ? 'address-suggest' : 'address-reverse'
     const [individual,global] = await Promise.all([
       consumeRateLimit(admin,rateSecret,scope,rawIp,60,3600),
-      consumeRateLimit(admin,rateSecret,`${scope}-global`,'all',800,86400),
+      consumeRateLimit(admin,rateSecret,`${scope}-global`,'all',100,21600),
     ])
     if (individual === 'unavailable' || global === 'unavailable') return reply(503, {ok:false, message:'Address lookup is temporarily unavailable.'})
     if (individual === 'limited' || global === 'limited') return reply(429, {ok:false, message:'Address search limit reached. Please try later or place the map pin.'})
