@@ -55,3 +55,8 @@
 .box-group-card .product-content{min-height:0}
 .box-group-card .qty-editor{margin-top:7px}
 .receipt-action{margin-top:20px;padding:16px;border:1px solid #e7d4c1;border-radius:13px;background:#fff8ed}.receipt-action strong{color:#59191a}.receipt-action p{margin:6px 0 12px}
+.address-results:not(:empty){margin-top:6px;border:1px solid #e7c7bd;border-radius:10px;background:#fff;max-height:240px;overflow:auto;box-shadow:0 8px 20px #4614141a}
+.address-results button{display:block;width:100%;border:0;border-bottom:1px solid #f1e3d5;background:#fff;color:#4d2620;text-align:left;padding:10px 12px;cursor:pointer}
+.address-results button:hover,.address-results button:focus-visible{background:#fff0dc}
+.address-results .hint{padding:10px 12px;margin:0}
+input[readonly]{background:#f8f3ed;color:#4d2620}
