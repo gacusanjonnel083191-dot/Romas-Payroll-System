@@ -31,6 +31,8 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [session,setSession] = useState(null)
   const [accessLevel,setAccessLevel] = useState('view')
   const [orders,setOrders] = useState([])
+  const [orderingControl,setOrderingControl] = useState(null)
+  const [orderingEvents,setOrderingEvents] = useState([])
   const [selectedId,setSelectedId] = useState('')
   const [detail,setDetail] = useState(null)
   const [detailRefresh,setDetailRefresh] = useState(0)
@@ -63,6 +65,8 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       setOrders(result.orders)
       onOrdersChange?.(result.orders)
       setAccessLevel(result.accessLevel)
+      setOrderingControl(result.orderingControl)
+      setOrderingEvents(result.orderingEvents || [])
       setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')
       setDetail(null)
@@ -76,7 +80,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     if(!session)return undefined
     let active=true
     request('staff-list').then(result=>{
-      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);onOrdersChange?.(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);onOrdersChange?.(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
         ? current : result.orders[0]?.id || '')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
@@ -162,6 +166,18 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     finally{setBusy(false)}
   }
 
+  async function toggleOrdering() {
+    if (accessLevel !== 'full' || !orderingControl || busy || loading) return
+    const enabled = !orderingControl.configuredEnabled
+    if (enabled && !orderingControl.canOpen) return
+    setBusy(true);setError('')
+    try {
+      await request('staff-ordering-set', {enabled,expectedVersion:orderingControl.version})
+      await refresh()
+    } catch(failure) {await refresh();setError(failure.message)}
+    finally {setBusy(false)}
+  }
+
   if (!client) return <main className="staff-login"><div className="staff-panel">
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
@@ -172,6 +188,19 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     <header><div><p className="staff-kicker">ROMA'S DONUTS · STAFF</p><h1>Customer orders</h1><p>{accessLevel==='full'?'Full access':'View only'}</p></div>
       <div className="staff-header-actions"><button onClick={()=>void refresh()} disabled={loading}>Refresh</button>
         {!embedded && <><a href="/">Main system</a><button onClick={()=>void client.auth.signOut()}>Sign out of main system</button></>}</div></header>
+    {orderingControl && <section className="staff-ordering-control" aria-label="Customer ordering availability">
+      <div><strong role="status">Customer ordering is {orderingControl.enabled?'OPEN':'CLOSED'}</strong>
+        <p>{orderingControl.canOpen?'New customer orders follow the published pickup schedule and 3 PM cutoff.':'Opening is temporarily locked by the server.'}</p>
+        {orderingEvents.length > 0 && <details><summary>Ordering change history</summary><ol>
+          {orderingEvents.map(event=><li key={event.id}>{event.actor_name} {event.new_enabled?'opened':'closed'} ordering · {when(event.created_at)}</li>)}
+        </ol></details>}
+      </div>
+      {accessLevel==='full' && <button type="button" onClick={()=>void toggleOrdering()}
+        disabled={busy||loading||(!orderingControl.canOpen&&!orderingControl.configuredEnabled)}
+        aria-label={orderingControl.configuredEnabled?'Close customer ordering':'Open customer ordering'}>
+        {busy?'Saving…':orderingControl.configuredEnabled?'Close ordering':'Open ordering'}
+      </button>}
+    </section>}
     {error && <p role="alert" className="staff-error">{error}</p>}
     <div className="staff-layout">
       <section className="staff-panel staff-list" aria-label="Order queue">

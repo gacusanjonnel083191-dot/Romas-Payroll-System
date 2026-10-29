@@ -58,7 +58,7 @@ const formatDate = value => value ? new Intl.DateTimeFormat('en-PH',{timeZone:PH
 const formatTime = value => value ? new Intl.DateTimeFormat('en-PH',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:PH_TZ}).format(new Date(`2026-01-01T${value}:00+08:00`)) : '';
 function save(){ if(!LIVE_ORDERING)localStorage.setItem(KEY,JSON.stringify(db)); }
 function notify(message){ document.querySelector('.toast')?.remove(); const el=document.createElement('div');el.className='toast';el.textContent=message;document.body.appendChild(el);clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.remove(),3500); }
-function nav(to){ page=to; error=''; window.scrollTo({top:0,behavior:'smooth'}); render(); if(LIVE_ORDERING&&to==='orders')void refreshLiveOrders(); }
+function nav(to){ page=to; error=''; window.scrollTo({top:0,behavior:'smooth'}); render(); if(LIVE_ORDERING&&to==='orders')void refreshLiveOrders(); if(LIVE_ORDERING&&to==='checkout')void refreshLiveConfig(); }
 function cartCount(){ return Object.values(cart).reduce((a,b)=>a+b,0); }
 function subtotal(){ return cartSubtotal(PRODUCTS,cart); }
 function currentBranch(){ return db.settings.branches[draft.branch]; }

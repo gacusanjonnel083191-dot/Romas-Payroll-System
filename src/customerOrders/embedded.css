@@ -23,6 +23,15 @@
 .customer-order-module .staff-header-actions button { display:inline-block; border:1px solid #ae2020; background:#ae2020; color:white; border-radius:9px; padding:.75rem 1rem; font-weight:700; text-decoration:none; text-align:center; }
 .customer-order-module .staff-panel button:disabled { opacity:.5; cursor:not-allowed; }
 .customer-order-module .staff-error { background:#fff0ed; color:#921919; border:1px solid #d99; padding:1rem; border-radius:9px; }
+.customer-order-module .staff-ordering-control { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin:1rem 0; padding:1rem 1.25rem; background:#fff; border:1px solid #ead8c8; border-radius:14px; color:#461414; }
+.customer-order-module .staff-ordering-control strong { font-size:1.1rem; }
+.customer-order-module .staff-ordering-control p { margin:.35rem 0; color:#76554d; }
+.customer-order-module .staff-ordering-control button { border:0; border-radius:9px; padding:.8rem 1rem; min-height:44px; background:#ae2020; color:#fff; font-weight:800; white-space:nowrap; }
+.customer-order-module .staff-ordering-control button:disabled { opacity:.5; cursor:not-allowed; }
+.customer-order-module .staff-ordering-control details { margin-top:.6rem; font-size:.9rem; }
+.customer-order-module .staff-ordering-control summary { cursor:pointer; }
+.customer-order-module .staff-ordering-control ol { margin:.5rem 0 0; padding-left:1.4rem; }
+.customer-order-module .staff-ordering-control li { margin:.3rem 0; }
 .customer-order-module .staff-app header { display:flex; justify-content:space-between; gap:1rem; align-items:center; }
 .customer-order-module .staff-app > header { color:#fff; }
 .customer-order-module .staff-app > header h1 { color:#fff !important; }
@@ -54,6 +63,7 @@
 .customer-order-module .staff-chat { display:flex!important; gap:.5rem; margin-top:.7rem; }
 .customer-order-module .staff-chat input { flex:1; }
 @media(max-width:700px) {
+  .customer-order-module .staff-ordering-control { align-items:stretch; flex-direction:column; }
   .customer-order-module .staff-app header { align-items:start; flex-direction:column; }
   .customer-order-module .staff-layout { grid-template-columns:1fr; }
   .customer-order-module .staff-list { max-height:260px; }
