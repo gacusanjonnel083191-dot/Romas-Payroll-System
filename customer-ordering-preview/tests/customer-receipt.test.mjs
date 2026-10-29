@@ -31,6 +31,19 @@ test('unpaid or inconsistent orders cannot produce a paid receipt',()=>{
   assert.throws(()=>customerPaymentReceiptHtml({...paidOrder,items:[{...paidOrder.items[0],lineTotal:149}]}),/do not match/);
 });
 
+test('paid delivery receipt shows destination and the final quoted fee',()=>{
+  const delivery={...paidOrder,type:'delivery',branch:null,pickupAddress:null,
+    address:'123 Test Street',town:'Dagupan City',landmark:'Near test market',
+    deliveryFee:90,total:240,receipt:{...paidOrder.receipt,amount:240}};
+  const html=customerPaymentReceiptHtml(delivery);
+  assert.match(html,/Scheduled delivery/);
+  assert.match(html,/123 Test Street, Dagupan City/);
+  assert.match(html,/Near test market/);
+  assert.match(html,/₱90\.00/);
+  assert.match(html,/₱240\.00/);
+  assert.doesNotMatch(html,/Scheduled pickup/);
+});
+
 test('full refund has a separate printable confirmation without a paid badge',()=>{
   const refunded={...paidOrder,paymentStatus:'refunded',refundedAt:'2026-10-26T03:00:00Z',
     receipt:{...paidOrder.receipt,refund:{
