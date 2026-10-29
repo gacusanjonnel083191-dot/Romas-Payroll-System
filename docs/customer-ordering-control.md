@@ -1,0 +1,9 @@
+# Customer ordering open/close control
+
+The Customer Orders screen in the main app shows the current server-side ordering state. Jonnel, Sheryl, and Myra have `full` customer-order access and can open or close ordering with one click. Francis and Arlyn can view the state and history but cannot change it. The Edge Function verifies the signed-in staff member and the database function checks their active account and `full` permission again.
+
+Migration `20261029090000_customer_ordering_control.sql` creates the switch **closed**, with an append-only audit history containing the actor ID, name at the time, old state, new state, and timestamp. A version check rejects stale clicks. A database trigger rejects new order inserts while closed and serializes inserts with closing the switch.
+
+`PUBLIC_ORDERING_SUBMISSIONS_ENABLED` remains an emergency server lock. For normal one-click operation, set it to `true` only after the closed-by-default migration and updated Edge Function are in place. The customer-facing `config` response reports open only when both the server lock and database switch allow orders. If the switch cannot be read, checkout fails closed. The customer page refreshes its state when a visitor enters checkout; the server checks again on submission.
+
+Rollout order: apply the migration, deploy the updated Edge Function, verify public `orderingEnabled:false`, enable the server lock while the database switch remains closed, deploy the main-app page, then use an authorized staff account to open ordering. Verify the audit entry, customer checkout, staff queue, and the close action. Do not mark an order paid without receiving money. To stop incoming orders immediately, click **Close ordering**; if the staff page is unavailable, set `PUBLIC_ORDERING_SUBMISSIONS_ENABLED=false` and verify public `orderingEnabled:false`.

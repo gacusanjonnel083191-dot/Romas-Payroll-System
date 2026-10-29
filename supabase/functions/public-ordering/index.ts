@@ -8,7 +8,7 @@ import {
   validPhone, validRequestId,
 } from './rules.mjs'
 
-const SUBMISSIONS_ENABLED = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
+const SUBMISSIONS_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
 const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
 
@@ -52,6 +52,17 @@ async function staffIdentity(admin: Client, request: Request) {
     .select('access_level').eq('admin_user_id', staff.id).maybeSingle()
   if (permissionError) return null
   return {...staff, accessLevel:permission?.access_level || 'view'}
+}
+
+async function orderingControl(admin: Client) {
+  const {data, error} = await admin.from('customer_ordering_control')
+    .select('enabled,version,changed_at').eq('id', true).single()
+  if (error || !data) return null
+  const version = Number(data.version)
+  if (!Number.isSafeInteger(version) || version < 0) return null
+  return {enabled:data.enabled === true && SUBMISSIONS_ALLOWED_BY_SERVER,
+    configuredEnabled:data.enabled === true, version,
+    canOpen:SUBMISSIONS_ALLOWED_BY_SERVER, changedAt:data.changed_at}
 }
 
 async function orderDetail(admin: Client, orderId: string, includeAudit = false) {
@@ -116,18 +127,21 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   const action = cleanText(body.action, 40)
 
   if (action === 'config') {
-    const {data, error} = await admin.from('customer_pickup_locations')
-      .select('name,address').eq('is_active', true).order('name')
-    if (error) return reply(503, {ok:false, message:'Ordering configuration is unavailable.'})
+    const [{data, error}, control] = await Promise.all([
+      admin.from('customer_pickup_locations').select('name,address').eq('is_active', true).order('name'),
+      orderingControl(admin),
+    ])
+    if (error || !control) return reply(503, {ok:false, message:'Ordering configuration is unavailable.'})
     const pickupLocations = (data || []).map(location => ({...location,
       hours:Object.hasOwn(PICKUP_HOURS, location.name) ? PICKUP_HOURS[location.name] : null}))
       .filter(location => location.hours)
     return reply(200, {ok:true, pickupLocations, deliveryAvailable:false,
-      orderingEnabled:SUBMISSIONS_ENABLED, phoneVerificationMethod:'staff_call'})
+      orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call'})
   }
 
   if (action === 'submit') {
-    if (!SUBMISSIONS_ENABLED) return reply(503, {ok:false, message:'Customer ordering is not open yet.'})
+    const control = await orderingControl(admin)
+    if (!control?.enabled) return reply(503, {ok:false, message:'Customer ordering is not open yet.'})
     const requestId = body.requestId
     const accessToken = body.accessToken
     if (!validRequestId(requestId) || !validAccessToken(accessToken)) return reply(400, {ok:false, message:'Invalid order request.'})
@@ -157,6 +171,9 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       p_scheduled_at:scheduledAt, p_packaging:packaging, p_notes:notes,
       p_subtotal:priced.subtotal, p_items:priced.lines,
     })
+    if (error?.code === 'P0001' && error.message === 'Customer ordering is closed') {
+      return reply(503, {ok:false, message:'Customer ordering is not open yet.'})
+    }
     if (error || !data?.[0]) return reply(409, {ok:false, message:'The order could not be saved. Please retry with the same request.'})
     const {data:saved} = await admin.from('customer_orders').select('subtotal,total')
       .eq('id',data[0].id).single()
@@ -180,11 +197,28 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
   if (!canPerformStaffAction(staff.accessLevel, action)) {
     return reply(403, {ok:false, message:'Your customer-order access is view only.'})
+  }
+
+  if (action === 'staff-ordering-set') {
+    const version = body.expectedVersion
+    if (!Number.isSafeInteger(version) || version < 0 || typeof body.enabled !== 'boolean') {
+      return reply(400, {ok:false, message:'Refresh the ordering status and try again.'})
+    }
+    if (body.enabled && !SUBMISSIONS_ALLOWED_BY_SERVER) {
+      return reply(409, {ok:false, message:'Ordering is locked closed by the server. Contact the owner.'})
+    }
+    const {data, error} = await admin.rpc('customer_set_ordering_enabled', {
+      p_actor_admin_user_id:staff.id, p_expected_version:version, p_enabled:body.enabled,
+    })
+    if (error || data !== true) return reply(409, {ok:false, message:'Ordering status changed. Refresh and try again.'})
+    const control = await orderingControl(admin)
+    return control ? reply(200, {ok:true, orderingControl:control})
+      : reply(503, {ok:false, message:'Ordering changed, but its status could not be read. Refresh the page.'})
   }
 
   if (action === 'staff-forecast') {
@@ -212,9 +246,16 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   }
 
   if (action === 'staff-list') {
-    const {data, error} = await admin.from('customer_orders').select(ORDER_FIELDS)
-      .order('created_at', {ascending:false}).limit(100)
-    return error ? reply(503, {ok:false, message:'Order queue is unavailable.'}) : reply(200, {ok:true, orders:data || [], accessLevel:staff.accessLevel})
+    const [{data, error}, control, {data:events, error:eventsError}] = await Promise.all([
+      admin.from('customer_orders').select(ORDER_FIELDS).order('created_at', {ascending:false}).limit(100),
+      orderingControl(admin),
+      admin.from('customer_ordering_control_events')
+        .select('id,actor_name,old_enabled,new_enabled,created_at').order('id', {ascending:false}).limit(10),
+    ])
+    return error || !control || eventsError
+      ? reply(503, {ok:false, message:'Order queue or ordering status is unavailable.'})
+      : reply(200, {ok:true, orders:data || [], accessLevel:staff.accessLevel,
+        orderingControl:control, orderingEvents:events || []})
   }
   const orderId = cleanText(body.orderId, 40)
   if (!validRequestId(orderId)) return reply(400, {ok:false, message:'Invalid order ID.'})

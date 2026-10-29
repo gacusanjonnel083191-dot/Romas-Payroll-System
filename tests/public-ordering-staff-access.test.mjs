@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {canPerformStaffAction} from '../supabase/functions/public-ordering/staff-access.mjs'
 
 const readActions = ['staff-list', 'staff-get', 'staff-forecast']
-const writeActions = ['staff-status', 'staff-phone-confirm', 'staff-message', 'staff-pay', 'staff-refund']
+const writeActions = ['staff-status', 'staff-phone-confirm', 'staff-message', 'staff-pay', 'staff-refund', 'staff-ordering-set']
 
 test('view-only admins can read orders and forecast but cannot change an order', () => {
   for (const action of readActions) assert.equal(canPerformStaffAction('view', action), true, action)
