@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {availableSlots, earliestOrderDate, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS} from '../logic.mjs';
+import {availableSlots, earliestOrderDate, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, DELIVERY_HOURS} from '../logic.mjs';
 import {PRODUCTS, findProduct, catalogCards} from '../catalog.mjs';
-import {PICKUP_HOURS, earliestOrderDate as serverEarliestOrderDate} from '../../supabase/functions/public-ordering/rules.mjs';
+import {PICKUP_HOURS, earliestOrderDate as serverEarliestOrderDate, validateSchedule} from '../../supabase/functions/public-ordering/rules.mjs';
 
 test('checkout date and slots follow the Manila 3 PM next-day cutoff', () => {
   const before = new Date('2026-10-13T14:59:59+08:00');
@@ -34,6 +34,16 @@ test('checkout slots match the four confirmed pickup schedules', () => {
   assert.deepEqual(slots(school,'2026-10-18'),[]);
   assert.equal(slots(gas,'2026-10-18').at(-1),'20:00');
   assert.deepEqual(availableSlots('2026-10-18',now,null),[]);
+});
+
+test('delivery offers server-valid times on Sunday after the next-day cutoff', () => {
+  const now = new Date('2026-10-29T19:18:00+08:00');
+  const slots = availableSlots('2026-11-01', now, DELIVERY_HOURS);
+  assert.equal(slots[0], '08:00');
+  assert.equal(slots.at(-1), '20:00');
+  assert.equal(slots.length, 25);
+  for (const time of slots) assert(validateSchedule('2026-11-01', time, now));
+  assert.deepEqual(availableSlots('2026-10-30', now, DELIVERY_HOURS), []);
 });
 
 test('approved delivery rate charges each additional started kilometer', () => {

@@ -1,4 +1,4 @@
-import {PH_TZ, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, phDate, earliestOrderDate, availableSlots, feeForDistance, haversineKm, cartSubtotal} from './logic.mjs?v=pickup-locations-20261015';
+import {PH_TZ, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, DELIVERY_HOURS, phDate, earliestOrderDate, availableSlots, feeForDistance, haversineKm, cartSubtotal} from './logic.mjs?v=delivery-hours-20261029';
 import {PRODUCTS, findProduct, catalogCards} from './catalog.mjs?v=small-box-prices-20261015';
 import {LIVE_ORDERING, liveCall, newOrderCredential, normalizeLiveOrder} from './live-client.mjs';
 import {customerPaymentReceiptHtml, customerRefundReceiptHtml} from './customer-receipt.mjs';
@@ -98,7 +98,7 @@ function renderCheckout(){
   const selectedHours=LIVE_ORDERING&&draft.type==='pickup'?livePickupLocations.find(location=>location.name===draft.branch)?.hours:null;
   const earliestDate=earliestOrderDate();
   if(draft.date<earliestDate)draft.date=earliestDate;
-  const slots=LIVE_ORDERING?availableSlots(draft.date,new Date(),selectedHours||null):availableSlots(draft.date);
+  const slots=LIVE_ORDERING?availableSlots(draft.date,new Date(),draft.type==='delivery'?DELIVERY_HOURS:selectedHours||null):availableSlots(draft.date);
   if(!slots.includes(draft.time)) draft.time=slots[0]||'';
   const fulfillment = `<div class="panel"><h3>1. Pickup or delivery</h3><div class="choice-row"><button type="button" class="choice ${draft.type==='pickup'?'active':''}" data-type="pickup">🏬 &nbsp; Pickup<br><small>Collect at a pickup location</small></button><button type="button" class="choice ${draft.type==='delivery'?'active':''}" data-type="delivery" ${LIVE_ORDERING&&!liveDeliveryAvailable?'disabled':''}>🛵 &nbsp; Delivery<br><small>${LIVE_ORDERING?(liveDeliveryAvailable?'Fee confirmed before acceptance':'Unavailable until routes are verified'):'We bring it to you'}</small></button></div>${draft.type==='pickup'?`<div class="field" style="margin-top:17px"><label for="branch">Pickup location</label><select id="branch" data-field="branch" name="branch">${(LIVE_ORDERING?livePickupLocations.map(location=>location.name):PICKUP_LOCATIONS).map(name=>`<option ${draft.branch===name?'selected':''}>${esc(name)}</option>`).join('')}</select><small class="hint">${LIVE_ORDERING?esc(livePickupLocations.find(location=>location.name===draft.branch)?.address||'No verified pickup locations are available yet.'):'Exact branch addresses will appear after Roma’s Donuts configures them.'}</small></div>`:''}</div>`;
   const schedule = `<div class="panel"><h3>2. Date and time</h3><div class="field-grid"><div class="field"><label for="date">${draft.type==='delivery'?'Requested delivery':'Pickup'} date *</label><input id="date" data-field="date" name="date" type="date" min="${earliestDate}" value="${esc(draft.date)}" required></div><div class="field"><label for="time">${draft.type==='delivery'?'Delivery':'Pickup'} time *</label><select id="time" data-field="time" name="time" required>${slots.length?slots.map(time=>`<option value="${time}" ${draft.time===time?'selected':''}>${formatTime(time)}</option>`).join(''):'<option value="">No available times — choose another date</option>'}</select></div></div><p class="hint">Order at least one day ahead. Next-day requests close at 3:00 PM Philippine time; after 3:00 PM, choose the following day or later. ${LIVE_ORDERING?(draft.type==='delivery'?'Requested delivery time is subject to staff confirmation.':`Pickup hours: ${esc(selectedHours?.label||'unavailable')}.`):'Preview pickup hours are 8:00 AM–5:00 PM.'}</p></div>`;
@@ -164,7 +164,7 @@ async function submitLiveOrder(form){
     error='Set a delivery pin, covered municipality, full address, and landmark.';render();return;
   }
   const selectedHours=draft.type==='pickup'?livePickupLocations.find(location=>location.name===draft.branch)?.hours:null;
-  if(!availableSlots(String(form.get('date')||''),new Date(),selectedHours||null).includes(String(form.get('time')||''))){
+  if(!availableSlots(String(form.get('date')||''),new Date(),draft.type==='delivery'?DELIVERY_HOURS:selectedHours||null).includes(String(form.get('time')||''))){
     error='Order at least one day ahead. Next-day requests close at 3:00 PM Philippine time; choose an available date and time.';render();return;
   }
   liveSubmitting=true;error='';render();
