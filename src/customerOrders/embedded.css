@@ -40,6 +40,14 @@
 .customer-order-module .staff-header-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
 .customer-order-module .staff-layout { display:grid; grid-template-columns:minmax(250px,330px) minmax(0,1fr); gap:1rem; }
 .customer-order-module .staff-list { max-height:calc(100vh - 220px); overflow:auto; }
+.customer-order-module .staff-queue-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.45rem; margin-bottom:.75rem; }
+.customer-order-module .staff-queue-tabs button,
+.customer-order-module .staff-voided-tabs button { min-height:44px; padding:.5rem; border:1px solid #d7bdac; border-radius:9px; background:#fff9f2; color:#461414; font-weight:700; }
+.customer-order-module .staff-queue-tabs button.active,
+.customer-order-module .staff-voided-tabs button.active { background:#8d171d; border-color:#8d171d; color:white; }
+.customer-order-module .staff-queue-tabs span { display:inline-block; min-width:1.4rem; padding:.1rem .3rem; border-radius:99px; background:#ead8c8; color:#461414; }
+.customer-order-module .staff-voided-tabs { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.75rem; }
+.customer-order-module .staff-void-audit { padding:.85rem 1rem; border:1px solid #e7c1b8; border-radius:10px; background:#fff3ee; color:#69201d; }
 .customer-order-module .staff-list>button { display:grid; width:100%; text-align:left; background:white; color:#461414; border:1px solid #ead8c8; margin:.5rem 0; padding:.8rem; }
 .customer-order-module .staff-list>button.selected { border-color:#ae2020; background:#fff7ec; }
 .customer-order-module .staff-list>button span { text-transform:capitalize; color:#ae2020; }

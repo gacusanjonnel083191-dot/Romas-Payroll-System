@@ -32,7 +32,11 @@ export function normalizeLiveOrder(order) {
     id:order.id, orderCode:order.order_code, name:order.customer_name, phone:order.customer_phone,
     date:`${parts.year}-${parts.month}-${parts.day}`, time:`${parts.hour}:${parts.minute}`,
     type:order.fulfillment_type, branch:order.pickup_location, town:order.delivery_municipality,
-    address:order.delivery_address, landmark:order.delivery_landmark, pin:null,
+    address:order.delivery_address, landmark:order.delivery_landmark,
+    pin:order.delivery_latitude!=null&&order.delivery_longitude!=null
+      ? {lat:Number(order.delivery_latitude),lng:Number(order.delivery_longitude)} : null,
+    deliveryOrigin:order.delivery_origin_location, deliveryQuotedAt:order.delivery_quoted_at,
+    roadKm:order.distance_km==null?null:Number(order.distance_km),
     packaging:order.packaging, status:order.status, paymentStatus:order.payment_status,
     paidAt:order.paid_at, refundedAt:order.refunded_at,
     pickupAddress:order.pickup_address_snapshot,

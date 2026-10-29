@@ -4,12 +4,13 @@ import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
 import {canPerformStaffAction} from './staff-access.mjs'
 import {
-  cleanText, isOrderDateAllowed, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
+  cleanText, DELIVERY_COVERAGE, isOrderDateAllowed, pricedItems, PICKUP_HOURS, validatePickupSchedule, validateSchedule, validAccessToken,
   validPhone, validRequestId,
 } from './rules.mjs'
 
 const SUBMISSIONS_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
-const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
+const DELIVERY_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_DELIVERY_ENABLED') === 'true'
+const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,delivery_origin_location,delivery_quoted_at,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
 
 type Client = ReturnType<typeof createClient<any>>
@@ -135,7 +136,9 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const pickupLocations = (data || []).map(location => ({...location,
       hours:Object.hasOwn(PICKUP_HOURS, location.name) ? PICKUP_HOURS[location.name] : null}))
       .filter(location => location.hours)
-    return reply(200, {ok:true, pickupLocations, deliveryAvailable:false,
+    return reply(200, {ok:true, pickupLocations,
+      deliveryAvailable:SUBMISSIONS_ALLOWED_BY_SERVER && DELIVERY_ALLOWED_BY_SERVER && pickupLocations.length > 0,
+      deliveryCoverage:DELIVERY_COVERAGE,
       orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call'})
   }
 
@@ -145,7 +148,9 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const requestId = body.requestId
     const accessToken = body.accessToken
     if (!validRequestId(requestId) || !validAccessToken(accessToken)) return reply(400, {ok:false, message:'Invalid order request.'})
-    if (body.fulfillmentType !== 'pickup') return reply(422, {ok:false, message:'Delivery orders are unavailable until routing and coverage are verified.'})
+    const fulfillmentType = body.fulfillmentType
+    if (fulfillmentType !== 'pickup' && fulfillmentType !== 'delivery') return reply(422, {ok:false, message:'Choose pickup or delivery.'})
+    if (fulfillmentType === 'delivery' && !DELIVERY_ALLOWED_BY_SERVER) return reply(422, {ok:false, message:'Delivery requests are not open yet.'})
     const name = cleanText(body.name, 120)
     const phone = cleanText(body.phone, 20)
     const locationName = cleanText(body.pickupLocation, 120)
@@ -157,28 +162,52 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
     if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
     if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})
-    const {data: pickup, error: pickupError} = await admin.from('customer_pickup_locations')
-      .select('name,address').eq('name', locationName).eq('is_active', true).maybeSingle()
-    if (pickupError || !pickup?.address) return reply(422, {ok:false, message:'This pickup point is not available yet.'})
-    const scheduledAt = validatePickupSchedule(pickup.name, body.date, body.time)
-    if (!scheduledAt) return reply(422, {ok:false, message:'Choose a pickup time within this location’s open days and hours.'})
+    let scheduledAt: string | null = null
+    let details: Record<string, unknown> = {}
+    if (fulfillmentType === 'pickup') {
+      const {data: pickup, error: pickupError} = await admin.from('customer_pickup_locations')
+        .select('name,address').eq('name', locationName).eq('is_active', true).maybeSingle()
+      if (pickupError || !pickup?.address) return reply(422, {ok:false, message:'This pickup point is not available yet.'})
+      scheduledAt = validatePickupSchedule(pickup.name, body.date, body.time)
+      if (!scheduledAt) return reply(422, {ok:false, message:'Choose a pickup time within this location’s open days and hours.'})
+      details = {p_pickup_location:pickup.name, p_pickup_address:pickup.address}
+    } else {
+      const municipality = cleanText(body.municipality, 80)
+      const address = cleanText(body.address, 300)
+      const landmark = cleanText(body.landmark, 200)
+      const latitude = Number(body.latitude)
+      const longitude = Number(body.longitude)
+      if (!DELIVERY_COVERAGE.includes(municipality) || address.length < 8 || landmark.length < 3
+        || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+        || latitude < 15.7 || latitude > 16.3 || longitude < 120.0 || longitude > 120.7) {
+        return reply(422, {ok:false, message:'Enter a covered municipality, full address, landmark, and a nearby map pin. Staff will confirm the exact service area.'})
+      }
+      scheduledAt = validateSchedule(body.date, body.time)
+      if (!scheduledAt) return reply(422, {ok:false, message:'Choose a delivery request date and time at least one day ahead, between 8:00 AM and 8:00 PM.'})
+      details = {p_municipality:municipality, p_address:address, p_landmark:landmark,
+        p_latitude:latitude, p_longitude:longitude}
+    }
     const dateYear = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Manila', year:'numeric'}).format(new Date())
     const code = `RD-${dateYear}-${crypto.randomUUID().replaceAll('-', '').slice(0,12).toUpperCase()}`
-    const {data, error} = await admin.rpc('customer_submit_pickup_order', {
+    const {data, error} = await admin.rpc(
+      fulfillmentType === 'pickup' ? 'customer_submit_pickup_order' : 'customer_submit_delivery_order', {
       p_request_id:requestId, p_access_token_hash:await sha256(accessToken as string),
       p_order_code:code, p_customer_name:name, p_customer_phone:phone,
-      p_pickup_location:pickup.name, p_pickup_address:pickup.address,
       p_scheduled_at:scheduledAt, p_packaging:packaging, p_notes:notes,
-      p_subtotal:priced.subtotal, p_items:priced.lines,
+      p_subtotal:priced.subtotal, p_items:priced.lines, ...details,
     })
     if (error?.code === 'P0001' && error.message === 'Customer ordering is closed') {
       return reply(503, {ok:false, message:'Customer ordering is not open yet.'})
     }
     if (error || !data?.[0]) return reply(409, {ok:false, message:'The order could not be saved. Please retry with the same request.'})
-    const {data:saved} = await admin.from('customer_orders').select('subtotal,total')
+    const {data:saved} = await admin.from('customer_orders').select('fulfillment_type,subtotal,total,delivery_quoted_at')
       .eq('id',data[0].id).single()
     if (!saved) return reply(503, {ok:false, message:'Order receipt is temporarily unavailable.'})
-    return reply(200, {ok:true, orderCode:data[0].order_code, subtotal:saved.subtotal, total:saved.total, reused:data[0].reused})
+    if (saved.fulfillment_type !== fulfillmentType) return reply(409, {ok:false, message:'This request ID belongs to a different order type.'})
+    return reply(200, {ok:true, orderCode:data[0].order_code, subtotal:saved.subtotal,
+      total:fulfillmentType === 'delivery' && !saved.delivery_quoted_at ? null : saved.total,
+      deliveryFeePending:fulfillmentType === 'delivery' && !saved.delivery_quoted_at,
+      reused:data[0].reused})
   }
 
   if (action === 'customer-get' || action === 'customer-message') {
@@ -197,7 +226,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set','staff-delivery-quote'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
   if (!canPerformStaffAction(staff.accessLevel, action)) {
@@ -246,16 +275,32 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   }
 
   if (action === 'staff-list') {
-    const [{data, error}, control, {data:events, error:eventsError}] = await Promise.all([
-      admin.from('customer_orders').select(ORDER_FIELDS).order('created_at', {ascending:false}).limit(100),
+    const groups = {
+      pending:['pending_confirmation'],
+      processing:['accepted','preparing','ready','out_for_delivery'],
+      completed:['completed'],
+      cancelled:['cancelled'],
+      declined:['declined'],
+    }
+    const [groupResults, control, {data:events, error:eventsError}, {data:origins, error:originsError}] = await Promise.all([
+      Promise.all(Object.entries(groups).map(async ([group,statuses]) => ({group,
+        result:await admin.from('customer_orders').select(ORDER_FIELDS,{count:'exact'})
+          .in('status',statuses).order('created_at',{ascending:false}).limit(100),
+      }))),
       orderingControl(admin),
       admin.from('customer_ordering_control_events')
         .select('id,actor_name,old_enabled,new_enabled,created_at').order('id', {ascending:false}).limit(10),
+      admin.from('customer_pickup_locations').select('name,address').eq('is_active',true).order('name'),
     ])
-    return error || !control || eventsError
+    const unavailable = groupResults.some(({result}) => result.error)
+    const orderCounts = Object.fromEntries(groupResults.map(({group,result}) => [group,result.count || 0]))
+    orderCounts.voided = orderCounts.cancelled + orderCounts.declined
+    const orders = groupResults.flatMap(({result}) => result.data || [])
+      .sort((a,b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+    return unavailable || !control || eventsError || originsError
       ? reply(503, {ok:false, message:'Order queue or ordering status is unavailable.'})
-      : reply(200, {ok:true, orders:data || [], accessLevel:staff.accessLevel,
-        orderingControl:control, orderingEvents:events || []})
+      : reply(200, {ok:true, orders, orderCounts, accessLevel:staff.accessLevel,
+        orderingControl:control, orderingEvents:events || [], deliveryOrigins:origins || []})
   }
   const orderId = cleanText(body.orderId, 40)
   if (!validRequestId(orderId)) return reply(400, {ok:false, message:'Invalid order ID.'})
@@ -271,6 +316,21 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       ? reply(409, {ok:false, message:'Phone confirmation was not saved. Refresh the order and check its status.'})
       : reply(200, {ok:true})
   }
+  if (action === 'staff-delivery-quote') {
+    const origin = cleanText(body.originLocation, 120)
+    const roadKm = Number(body.roadKm)
+    if (!origin || !Number.isFinite(roadKm) || roadKm < 0 || roadKm > 100
+      || Math.round(roadKm * 1000) !== roadKm * 1000) {
+      return reply(422, {ok:false, message:'Choose a dispatch location and enter road distance in km, up to three decimals.'})
+    }
+    const {data, error} = await admin.rpc('customer_set_delivery_quote', {
+      p_order_id:orderId, p_actor_admin_user_id:staff.id,
+      p_origin_location:origin, p_road_km:roadKm,
+    })
+    return error || data !== true
+      ? reply(409, {ok:false, message:'Delivery quote was not saved. Refresh the order and check its status.'})
+      : reply(200, {ok:true})
+  }
   if (action === 'staff-status') {
     const expected = cleanText(body.expectedStatus, 40)
     const next = cleanText(body.status, 40)
@@ -281,7 +341,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     })
     return error || data !== true
       ? reply(409, {ok:false, message:next === 'accepted'
-        ? 'Call and confirm the customer’s phone number before accepting this order.'
+        ? 'For delivery, save the road-distance quote and confirm its full amount with the customer by phone before accepting. Pickup also requires the staff call.'
         : 'Status changed or this transition is not allowed.'})
       : reply(200, {ok:true})
   }

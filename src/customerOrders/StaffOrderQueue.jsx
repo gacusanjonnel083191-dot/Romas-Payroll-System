@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from 'react'
 import {createClient} from '@supabase/supabase-js'
 import {callStaffOrdering} from './staffApi.mjs'
+import {ORDER_QUEUE_VIEWS, ordersForView, finalStatusEvent} from './orderQueueViews.mjs'
 
 const url = import.meta.env.VITE_SUPABASE_URL || ''
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
@@ -31,14 +32,20 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [session,setSession] = useState(null)
   const [accessLevel,setAccessLevel] = useState('view')
   const [orders,setOrders] = useState([])
+  const [queueView,setQueueView] = useState('pending')
+  const [voidedStatus,setVoidedStatus] = useState('all')
+  const [orderCounts,setOrderCounts] = useState({})
   const [orderingControl,setOrderingControl] = useState(null)
   const [orderingEvents,setOrderingEvents] = useState([])
+  const [deliveryOrigins,setDeliveryOrigins] = useState([])
   const [selectedId,setSelectedId] = useState('')
   const [detail,setDetail] = useState(null)
   const [detailRefresh,setDetailRefresh] = useState(0)
   const [message,setMessage] = useState('')
   const [statusNote,setStatusNote] = useState('')
   const [phoneCallConfirmed,setPhoneCallConfirmed] = useState(false)
+  const [deliveryOrigin,setDeliveryOrigin] = useState('')
+  const [roadKm,setRoadKm] = useState('')
   const [paymentMethod,setPaymentMethod] = useState('Cash')
   const [paymentReference,setPaymentReference] = useState('')
   const [paymentConfirmed,setPaymentConfirmed] = useState(false)
@@ -49,7 +56,18 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [error,setError] = useState('')
   const [busy,setBusy] = useState(false)
   const [loading,setLoading] = useState(false)
-  const selected = useMemo(()=>orders.find(order=>order.id===selectedId),[orders,selectedId])
+  const visibleOrders = useMemo(()=>ordersForView(orders,queueView,voidedStatus),[orders,queueView,voidedStatus])
+  const selected = useMemo(()=>visibleOrders.find(order=>order.id===selectedId),[visibleOrders,selectedId])
+  const selectedDetail = selected && detail?.id===selected.id ? detail : null
+  const voidEvent = finalStatusEvent(selectedDetail)
+
+  function changeQueueView(view, status = 'all') {
+    const nextOrders = ordersForView(orders,view,status)
+    setQueueView(view)
+    setVoidedStatus(status)
+    setSelectedId(nextOrders[0]?.id || '')
+    setDetail(null)
+  }
 
   useEffect(()=>{
     if (!client) return undefined
@@ -63,25 +81,31 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     try {
       const result = await request('staff-list')
       setOrders(result.orders)
+      setOrderCounts(result.orderCounts || {})
       onOrdersChange?.(result.orders)
       setAccessLevel(result.accessLevel)
       setOrderingControl(result.orderingControl)
       setOrderingEvents(result.orderingEvents || [])
-      setSelectedId(current=>result.orders.some(order=>order.id===current)
-        ? current : result.orders[0]?.id || '')
+      setDeliveryOrigins(result.deliveryOrigins || [])
+      setSelectedId(current=>{
+        const nextOrders = ordersForView(result.orders,queueView,voidedStatus)
+        return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
+      })
       setDetail(null)
       setDetailRefresh(current=>current+1)
       setError('')
     } catch (failure) { setError(failure.message) }
     finally { setLoading(false) }
-  },[request,onOrdersChange])
+  },[request,onOrdersChange,queueView,voidedStatus])
 
   useEffect(()=>{
     if(!session)return undefined
     let active=true
     request('staff-list').then(result=>{
-      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);onOrdersChange?.(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
-        ? current : result.orders[0]?.id || '')}
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);onOrdersChange?.(result.orders);setSelectedId(current=>{
+        const nextOrders = ordersForView(result.orders,'pending')
+        return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
+      })}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
   },[session,request,onOrdersChange])
@@ -115,6 +139,22 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     setBusy(true);setError('')
     try {
       await request('staff-phone-confirm',{orderId:detail.id})
+      setPhoneCallConfirmed(false)
+      await refresh()
+      const result = await request('staff-get',{orderId:detail.id})
+      setDetail(result.order)
+    } catch(failure){setError(failure.message)}
+    finally{setBusy(false)}
+  }
+
+  async function quoteDelivery(event) {
+    event.preventDefault()
+    if (!detail || busy || detail.fulfillment_type!=='delivery' || detail.status!=='pending_confirmation') return
+    setBusy(true);setError('')
+    try {
+      await request('staff-delivery-quote', {
+        orderId:detail.id,originLocation:deliveryOrigin,roadKm:Number(roadKm),
+      })
       setPhoneCallConfirmed(false)
       await refresh()
       const result = await request('staff-get',{orderId:detail.id})
@@ -190,7 +230,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
         {!embedded && <><a href="/">Main system</a><button onClick={()=>void client.auth.signOut()}>Sign out of main system</button></>}</div></header>
     {orderingControl && <section className="staff-ordering-control" aria-label="Customer ordering availability">
       <div><strong role="status">Customer ordering is {orderingControl.enabled?'OPEN':'CLOSED'}</strong>
-        <p>{orderingControl.canOpen?'New customer orders follow the published pickup schedule and 3 PM cutoff.':'Opening is temporarily locked by the server.'}</p>
+        <p>{orderingControl.canOpen?'New customer requests follow the published pickup hours and 3 PM next-day cutoff. Delivery requests require a staff quote and customer confirmation.':'Opening is temporarily locked by the server.'}</p>
         {orderingEvents.length > 0 && <details><summary>Ordering change history</summary><ol>
           {orderingEvents.map(event=><li key={event.id}>{event.actor_name} {event.new_enabled?'opened':'closed'} ordering · {when(event.created_at)}</li>)}
         </ol></details>}
@@ -204,26 +244,55 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     {error && <p role="alert" className="staff-error">{error}</p>}
     <div className="staff-layout">
       <section className="staff-panel staff-list" aria-label="Order queue">
-        <h2>Requests {loading && <small>Refreshing…</small>}</h2>
-        {orders.length===0 && <p>No customer orders are available.</p>}
-        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPhoneCallConfirmed(false);setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
+        <h2>Orders {loading && <small>Refreshing…</small>}</h2>
+        <nav className="staff-queue-tabs" aria-label="Order status views">
+          {ORDER_QUEUE_VIEWS.map(view=><button type="button" key={view.id} className={queueView===view.id?'active':''} aria-current={queueView===view.id?'page':undefined}
+            onClick={()=>changeQueueView(view.id)}>{view.label} <span>{orderCounts[view.id] ?? ordersForView(orders,view.id).length}</span></button>)}
+        </nav>
+        {queueView==='voided' && <div className="staff-voided-tabs" role="group" aria-label="Voided order type">
+          {['all','cancelled','declined'].map(status=><button type="button" key={status} className={voidedStatus===status?'active':''} aria-pressed={voidedStatus===status}
+            onClick={()=>changeQueueView('voided',status)}>{status==='all'?'All voided':status==='cancelled'?'Cancelled':'Declined'}</button>)}
+        </div>}
+        {visibleOrders.length===0 && <p>No orders in this view.</p>}
+        {queueView!=='voided' && orderCounts[queueView] > visibleOrders.length && <p className="staff-hint">Showing the latest {visibleOrders.length} of {orderCounts[queueView]} orders in this view.</p>}
+        {queueView==='voided' && (orderCounts[voidedStatus] ?? orderCounts.voided) > visibleOrders.length && <p className="staff-hint">Showing the latest {visibleOrders.length} of {orderCounts[voidedStatus] ?? orderCounts.voided} voided orders.</p>}
+        {visibleOrders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPhoneCallConfirmed(false);setDeliveryOrigin('');setRoadKm('');setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
           <strong>{order.order_code}</strong><span>{order.status.replaceAll('_',' ')}</span>
           <small>{order.customer_name} · {when(order.scheduled_at)}</small>
-          <small>{order.fulfillment_type} · {money(order.total)}</small>
+          <small>{order.fulfillment_type} · {order.fulfillment_type==='delivery'&&!order.delivery_quoted_at?'Fee pending':money(order.total)}</small>
         </button>)}
       </section>
       <section className="staff-panel staff-detail" aria-label="Selected order">
-        {!detail ? <p>{selected?'Loading order…':'Select an order.'}</p> : <>
-          <div className="staff-title"><h2>{detail.order_code}</h2><span>{detail.status.replaceAll('_',' ')}</span></div>
+        {!selectedDetail ? <p>{selected?'Loading order…':'Select an order.'}</p> : <>
+          <div className="staff-title"><h2>{selectedDetail.order_code}</h2><span>{selectedDetail.status.replaceAll('_',' ')}</span></div>
+          {voidEvent && <p className="staff-void-audit" role="status"><strong>{selectedDetail.status==='cancelled'?'Cancelled':'Declined'} by {voidEvent.actor_name || (voidEvent.actor==='customer'?'Customer':'System')}</strong> on {when(voidEvent.created_at)}{voidEvent.note?` · ${voidEvent.note}`:''}. Full activity appears in Order history below.</p>}
           <p><strong>{detail.customer_name}</strong> · {detail.customer_phone}</p>
+          {detail.fulfillment_type==='delivery' && <>
+            <p><strong>Delivery destination:</strong> {detail.delivery_address}, {detail.delivery_municipality}</p>
+            <p><strong>Landmark:</strong> {detail.delivery_landmark}</p>
+            <p><a href={`https://www.openstreetmap.org/?mlat=${Number(detail.delivery_latitude)}&mlon=${Number(detail.delivery_longitude)}#map=16/${Number(detail.delivery_latitude)}/${Number(detail.delivery_longitude)}`} target="_blank" rel="noreferrer">View customer map pin ↗</a></p>
+            {detail.delivery_quoted_at
+              ? <p className="staff-hint" role="status">Delivery quote: {detail.distance_km} road km from {detail.delivery_origin_location}; fee {money(detail.delivery_fee)}. Confirm the full {money(detail.total)} with the customer before accepting.</p>
+              : <p className="staff-hint" role="status">Road distance and delivery fee have not been confirmed. This request cannot be accepted yet.</p>}
+            {detail.status==='pending_confirmation' && accessLevel==='full' && <form className="staff-payment" onSubmit={quoteDelivery}>
+              <h3>Set delivery quote</h3>
+              <p className="staff-hint">Verify the municipality and map pin, select the actual dispatch location, then measure the road route. Rate: ₱80 for the first 3 km plus ₱10 for each additional started km. Saving a new quote clears any earlier phone confirmation.</p>
+              <label>Dispatch location<select value={deliveryOrigin} onChange={event=>setDeliveryOrigin(event.target.value)} required>
+                <option value="">Select location</option>
+                {deliveryOrigins.map(origin=><option key={origin.name} value={origin.name}>{origin.name}</option>)}
+              </select></label>
+              <label>Verified road distance (km)<input type="number" min="0" max="100" step="0.001" value={roadKm} onChange={event=>setRoadKm(event.target.value)} required /></label>
+              <button disabled={busy||!deliveryOrigin||roadKm===''||Number(roadKm)<0||Number(roadKm)>100}>{busy?'Saving…':'Save delivery quote'}</button>
+            </form>}
+          </>}
           {detail.phone_verified_at
             ? <p className="staff-hint" role="status">Phone confirmed by staff call on {when(detail.phone_verified_at)}.</p>
             : detail.status==='pending_confirmation' && accessLevel==='full'
               ? <form className="staff-payment" onSubmit={confirmPhoneByCall}>
                 <h3>Confirm customer by phone</h3>
-                <p className="staff-hint">Call {detail.customer_phone} and confirm the customer’s name, order, pickup location, and requested time before accepting.</p>
-                <label className="staff-payment-confirm"><input type="checkbox" checked={phoneCallConfirmed} onChange={event=>setPhoneCallConfirmed(event.target.checked)} /> I spoke with the customer at this number and confirmed the order details.</label>
-                <button disabled={busy||!phoneCallConfirmed}>{busy?'Saving…':'Record phone confirmation'}</button>
+                <p className="staff-hint">Call {detail.customer_phone} and confirm the customer’s name, order, {detail.fulfillment_type==='delivery'?'delivery address, requested time, and full quoted total':'pickup location, and requested time'} before accepting.</p>
+                <label className="staff-payment-confirm"><input type="checkbox" checked={phoneCallConfirmed} onChange={event=>setPhoneCallConfirmed(event.target.checked)} /> I spoke with the customer at this number and they agreed to the order details{detail.fulfillment_type==='delivery'?' and full delivery charge':''}.</label>
+                <button disabled={busy||!phoneCallConfirmed||(detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at)}>{busy?'Saving…':'Record phone confirmation'}</button>
               </form>
               : <p className="staff-hint">Phone confirmation was not recorded for this order.</p>}
           <p>{when(detail.scheduled_at)} · {detail.fulfillment_type}</p>
@@ -236,8 +305,8 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
             <span>{item.quantity} × {item.product_name}</span><strong>{money(item.line_total)}</strong>
           </div>)}
           <div className="staff-row"><span>Subtotal</span><strong>{money(detail.subtotal)}</strong></div>
-          <div className="staff-row"><span>Delivery</span><strong>{money(detail.delivery_fee)}</strong></div>
-          <div className="staff-row staff-total"><span>Total · {detail.payment_status}</span><strong>{money(detail.total)}</strong></div>
+          <div className="staff-row"><span>Delivery</span><strong>{detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at?'Pending quote':money(detail.delivery_fee)}</strong></div>
+          <div className="staff-row staff-total"><span>Total · {detail.payment_status}</span><strong>{detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at?'Pending quote':money(detail.total)}</strong></div>
           {detail.paid_at && <p className="staff-hint">Payment recorded {when(detail.paid_at)}. This order is linked to one separate online sale.</p>}
           {detail.refunded_at && <p className="staff-hint">Full refund recorded {when(detail.refunded_at)}. The original sale remains in the ledger, with a separate reversing entry{detail.receipt?.refund?.id? ` (${detail.receipt.refund.id})` : ''}.</p>}
           {accessLevel==='full' && <><h3>Review</h3>
@@ -245,7 +314,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
             .filter(action=>(action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
               && (action!=='cancelled'||detail.payment_status!=='paid'))
-            .map(action=><button key={action} disabled={busy||(action==='accepted'&&!detail.phone_verified_at)} onClick={()=>void updateStatus(action)}>{action.replaceAll('_',' ')}</button>)}</div>
+            .map(action=><button key={action} disabled={busy||(action==='accepted'&&(!detail.phone_verified_at||(detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at)))} onClick={()=>void updateStatus(action)}>{action.replaceAll('_',' ')}</button>)}</div>
           {detail.payment_status==='unpaid' && ['accepted','preparing','ready','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordPayment}>
             <h3>Confirm payment and record online sale</h3>
             <p className="staff-hint">Record this once, only after receiving and checking the full {money(detail.total)} payment. The sale will appear separately from the outlet POS.</p>
