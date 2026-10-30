@@ -15,12 +15,47 @@ const ACTIONS = {
   preparing:['ready','cancelled'],
   ready:['out_for_delivery','cancelled'],
 }
+const ACTION_LABELS = {accepted:'Accept order',declined:'Decline request',cancelled:'Cancel order',
+  preparing:'Start preparing',ready:'Mark ready',out_for_delivery:'Out for delivery'}
 
-function Login() {
+function Login({client, stagingPreview}) {
+  const [email,setEmail] = useState('')
+  const [password,setPassword] = useState('')
+  const [busy,setBusy] = useState(false)
+  const [error,setError] = useState('')
+
+  async function signIn(event) {
+    event.preventDefault()
+    if (!client || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const {error:signInError} = await client.auth.signInWithPassword({
+        email:email.trim(), password,
+      })
+      if (signInError) throw signInError
+      setPassword('')
+    } catch (failure) {
+      setError(failure.message || 'Sign-in failed. Check your staging test account.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return <main className="staff-login"><div className="staff-panel">
     <p className="staff-kicker">ROMA'S DONUTS</p><h1>Customer order queue</h1>
-    <p>Sign in to Roma’s main business system to use the same account here.</p>
-    <a href="/">Open main system sign-in</a>
+    {stagingPreview ? <>
+      <p>Staging test sign-in. Use your staging test account.</p>
+      <form onSubmit={signIn}>
+        <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="username" required /></label>
+        <label>Password<input type="password" value={password} onChange={event=>setPassword(event.target.value)} autoComplete="current-password" required /></label>
+        {error && <p className="staff-error" role="alert">{error}</p>}
+        <button type="submit" disabled={busy}>{busy?'Signing in…':'Sign in to staging'}</button>
+      </form>
+    </> : <>
+      <p>Sign in to Roma’s main business system to use the same account here.</p>
+      <a href="/">Open main system sign-in</a>
+    </>}
   </div></main>
 }
 
@@ -38,6 +73,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [orderingControl,setOrderingControl] = useState(null)
   const [orderingEvents,setOrderingEvents] = useState([])
   const [deliveryOrigins,setDeliveryOrigins] = useState([])
+  const [automaticDeliveryQuoteAvailable,setAutomaticDeliveryQuoteAvailable] = useState(false)
   const [selectedId,setSelectedId] = useState('')
   const [detail,setDetail] = useState(null)
   const [detailRefresh,setDetailRefresh] = useState(0)
@@ -45,7 +81,10 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [statusNote,setStatusNote] = useState('')
   const [phoneCallConfirmed,setPhoneCallConfirmed] = useState(false)
   const [deliveryOrigin,setDeliveryOrigin] = useState('')
+  const [deliveryRoute,setDeliveryRoute] = useState(null)
   const [roadKm,setRoadKm] = useState('')
+  const [routeError,setRouteError] = useState('')
+  const [routeLoading,setRouteLoading] = useState(false)
   const [paymentMethod,setPaymentMethod] = useState('Cash')
   const [paymentReference,setPaymentReference] = useState('')
   const [paymentConfirmed,setPaymentConfirmed] = useState(false)
@@ -59,6 +98,8 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const visibleOrders = useMemo(()=>ordersForView(orders,queueView,voidedStatus),[orders,queueView,voidedStatus])
   const selected = useMemo(()=>visibleOrders.find(order=>order.id===selectedId),[visibleOrders,selectedId])
   const selectedDetail = selected && detail?.id===selected.id ? detail : null
+  const routeOrderId = selectedDetail?.id
+  const routeEligible = selectedDetail?.fulfillment_type==='delivery' && selectedDetail?.status==='pending_confirmation'
   const voidEvent = finalStatusEvent(selectedDetail)
 
   function changeQueueView(view, status = 'all') {
@@ -87,6 +128,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       setOrderingControl(result.orderingControl)
       setOrderingEvents(result.orderingEvents || [])
       setDeliveryOrigins(result.deliveryOrigins || [])
+      setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true)
       setSelectedId(current=>{
         const nextOrders = ordersForView(result.orders,queueView,voidedStatus)
         return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
@@ -102,7 +144,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     if(!session)return undefined
     let active=true
     request('staff-list').then(result=>{
-      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);onOrdersChange?.(result.orders);setSelectedId(current=>{
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true);onOrdersChange?.(result.orders);setSelectedId(current=>{
         const nextOrders = ordersForView(result.orders,'pending')
         return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
       })}
@@ -117,6 +159,19 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
   },[session,selectedId,detailRefresh,request])
+
+  useEffect(()=>{
+    if (!routeEligible || !routeOrderId || !deliveryOrigin || accessLevel!=='full'
+      || !automaticDeliveryQuoteAvailable) {
+      return undefined
+    }
+    let active=true
+    request('staff-delivery-route',{orderId:routeOrderId,originLocation:deliveryOrigin})
+      .then(result=>{if(active)setDeliveryRoute({...result,origin:deliveryOrigin})})
+      .catch(failure=>{if(active)setRouteError(failure.message)})
+      .finally(()=>{if(active)setRouteLoading(false)})
+    return ()=>{active=false}
+  },[routeOrderId,routeEligible,deliveryOrigin,accessLevel,automaticDeliveryQuoteAvailable,request])
 
   async function updateStatus(status) {
     if (!detail || busy) return
@@ -153,7 +208,8 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     setBusy(true);setError('')
     try {
       await request('staff-delivery-quote', {
-        orderId:detail.id,originLocation:deliveryOrigin,roadKm:Number(roadKm),
+        orderId:detail.id,originLocation:deliveryOrigin,
+        ...(!automaticDeliveryQuoteAvailable?{roadKm:Number(roadKm)}:{}),
       })
       setPhoneCallConfirmed(false)
       await refresh()
@@ -222,7 +278,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
   </div></main>
-  if (!session) return <Login />
+  if (!session) return <Login client={client} stagingPreview={!embedded && import.meta.env.DEV && import.meta.env.VITE_STAGING_STAFF_LOGIN === 'true'} />
 
   return <main className={`staff-app${embedded?' staff-embedded':''}`}>
     <header><div><p className="staff-kicker">ROMA'S DONUTS · STAFF</p><h1>Customer orders</h1><p>{accessLevel==='full'?'Full access':'View only'}</p></div>
@@ -256,7 +312,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
         {visibleOrders.length===0 && <p>No orders in this view.</p>}
         {queueView!=='voided' && orderCounts[queueView] > visibleOrders.length && <p className="staff-hint">Showing the latest {visibleOrders.length} of {orderCounts[queueView]} orders in this view.</p>}
         {queueView==='voided' && (orderCounts[voidedStatus] ?? orderCounts.voided) > visibleOrders.length && <p className="staff-hint">Showing the latest {visibleOrders.length} of {orderCounts[voidedStatus] ?? orderCounts.voided} voided orders.</p>}
-        {visibleOrders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPhoneCallConfirmed(false);setDeliveryOrigin('');setRoadKm('');setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
+        {visibleOrders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPhoneCallConfirmed(false);setDeliveryOrigin('');setDeliveryRoute(null);setRoadKm('');setRouteError('');setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
           <strong>{order.order_code}</strong><span>{order.status.replaceAll('_',' ')}</span>
           <small>{order.customer_name} · {when(order.scheduled_at)}</small>
           <small>{order.fulfillment_type} · {order.fulfillment_type==='delivery'&&!order.delivery_quoted_at?'Fee pending':money(order.total)}</small>
@@ -276,13 +332,17 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
               : <p className="staff-hint" role="status">Road distance and delivery fee have not been confirmed. This request cannot be accepted yet.</p>}
             {detail.status==='pending_confirmation' && accessLevel==='full' && <form className="staff-payment" onSubmit={quoteDelivery}>
               <h3>Set delivery quote</h3>
-              <p className="staff-hint">Verify the municipality and map pin, select the actual dispatch location, then measure the road route. Rate: ₱80 for the first 3 km plus ₱10 for each additional started km. Saving a new quote clears any earlier phone confirmation.</p>
-              <label>Dispatch location<select value={deliveryOrigin} onChange={event=>setDeliveryOrigin(event.target.value)} required>
+              <p className="staff-hint">Verify the destination pin, then select the actual dispatch location. {automaticDeliveryQuoteAvailable?'Driving distance and the delivery fee are calculated automatically.':'Measure the road distance before entering it below.'} Rate: ₱80 for the first 3 km plus ₱10 for each additional started km. Saving a new quote clears any earlier phone confirmation.</p>
+              <label>Dispatch location<select value={deliveryOrigin} onChange={event=>{setDeliveryRoute(null);setRouteError('');setRouteLoading(Boolean(event.target.value&&automaticDeliveryQuoteAvailable));setDeliveryOrigin(event.target.value)}} required>
                 <option value="">Select location</option>
                 {deliveryOrigins.map(origin=><option key={origin.name} value={origin.name}>{origin.name}</option>)}
               </select></label>
-              <label>Verified road distance (km)<input type="number" min="0" max="100" step="0.001" value={roadKm} onChange={event=>setRoadKm(event.target.value)} required /></label>
-              <button disabled={busy||!deliveryOrigin||roadKm===''||Number(roadKm)<0||Number(roadKm)>100}>{busy?'Saving…':'Save delivery quote'}</button>
+              {automaticDeliveryQuoteAvailable ? <>
+                {routeLoading && <p role="status">Calculating driving route and delivery fee…</p>}
+                {routeError && <p role="alert" className="staff-error">{routeError}</p>}
+                {deliveryRoute?.origin===deliveryOrigin && <p role="status"><strong>{deliveryRoute.roadKm} road km · {money(deliveryRoute.deliveryFee)} delivery fee · {money(deliveryRoute.total)} order total</strong><br /><small>Road route by HeiGIT openrouteservice using OpenStreetMap data. Review this quote before saving; the route is checked again when saved.</small></p>}
+              </> : <label>Verified road distance (km)<input type="number" min="0" max="100" step="0.001" value={roadKm} onChange={event=>setRoadKm(event.target.value)} required /></label>}
+              <button disabled={busy||!deliveryOrigin||(automaticDeliveryQuoteAvailable?(routeLoading||!deliveryRoute||deliveryRoute.origin!==deliveryOrigin):(roadKm===''||Number(roadKm)<0||Number(roadKm)>100))}>{busy?'Saving…':'Save delivery quote'}</button>
             </form>}
           </>}
           {detail.phone_verified_at
@@ -310,11 +370,11 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           {detail.paid_at && <p className="staff-hint">Payment recorded {when(detail.paid_at)}. This order is linked to one separate online sale.</p>}
           {detail.refunded_at && <p className="staff-hint">Full refund recorded {when(detail.refunded_at)}. The original sale remains in the ledger, with a separate reversing entry{detail.receipt?.refund?.id? ` (${detail.receipt.refund.id})` : ''}.</p>}
           {accessLevel==='full' && <><h3>Review</h3>
-          <label>Review note<input value={statusNote} onChange={event=>setStatusNote(event.target.value)} maxLength={500} /></label>
+          <label>Reason or review note<input value={statusNote} onChange={event=>setStatusNote(event.target.value)} maxLength={500} /></label>
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
             .filter(action=>(action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
               && (action!=='cancelled'||detail.payment_status!=='paid'))
-            .map(action=><button key={action} disabled={busy||(action==='accepted'&&(!detail.phone_verified_at||(detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at)))} onClick={()=>void updateStatus(action)}>{action.replaceAll('_',' ')}</button>)}</div>
+            .map(action=><button key={action} disabled={busy||(action==='accepted'&&(!detail.phone_verified_at||(detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at)))} onClick={()=>void updateStatus(action)}>{ACTION_LABELS[action] || action.replaceAll('_',' ')}</button>)}</div>
           {detail.payment_status==='unpaid' && ['accepted','preparing','ready','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordPayment}>
             <h3>Confirm payment and record online sale</h3>
             <p className="staff-hint">Record this once, only after receiving and checking the full {money(detail.total)} payment. The sale will appear separately from the outlet POS.</p>

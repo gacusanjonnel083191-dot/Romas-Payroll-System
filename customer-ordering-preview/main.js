@@ -34,6 +34,7 @@ let livePickupLocations = [];
 let liveOrderingEnabled = false;
 let liveDeliveryAvailable = false;
 let liveDeliveryCoverage = COVERAGE;
+let liveAddressSearchAvailable = false;
 let liveConfigError = '';
 let liveSubmitting = false;
 let liveReceipts = [];
@@ -48,7 +49,10 @@ let searchTerm = '';
 const boxPreviews = {};
 let selectedId = db.orders[0]?.id || null;
 let cart = {};
-let draft = {type:'pickup',packaging:'box',date:earliestOrderDate(),time:'',town:'Dagupan City',branch:'Dagupan City',name:'',phone:'',address:'',landmark:'',notes:'',pin:null,quote:null};
+let draft = {type:'pickup',packaging:'box',date:earliestOrderDate(),time:'',town:'Dagupan City',branch:'Dagupan City',name:'',phone:'',address:'',addressDetails:'',addressQuery:'',manualAddress:false,landmark:'',notes:'',pin:null,quote:null};
+let addressMatches = [];
+let addressSearchTimer;
+let addressRequestId = 0;
 let map;
 let marker;
 let error = '';
@@ -91,7 +95,10 @@ function field(label,name,placeholder='',required=false,type='text',extra=''){re
 function deliverySection(){
   if(draft.type!=='delivery') return '';
   const q=draft.quote;
-  return `<div class="panel"><h3>Delivery location</h3><div class="field"><label for="town">City / municipality *</label><select id="town" name="town" data-field="town">${(LIVE_ORDERING?liveDeliveryCoverage:COVERAGE).map(name=>`<option ${draft.town===name?'selected':''}>${name}</option>`).join('')}</select></div><p class="hint">Drag the pin or tap the map to mark the exact drop-off point. Staff will verify the address and coverage before accepting.</p><div class="map" id="location-map"><div class="map-fallback">Map loading…<br>Coordinates can also be entered below.</div></div><div class="field-grid">${field('Latitude','lat','16.000000',true,'number','step="any" min="-90" max="90"')}${field('Longitude','lng','120.000000',true,'number','step="any" min="-180" max="180"')}</div><button type="button" class="btn btn-ghost" data-action="locate">◎ Use my current location</button><div style="height:14px"></div>${field('Full delivery address','address','Street, barangay, house/building',true)}${field('Landmark','landmark','What should the rider look for?',true)}<div class="quote-box">${LIVE_ORDERING?'<strong>Delivery fee confirmed by staff before acceptance.</strong><br>Rate: ₱80 for the first 3 road km, plus ₱10 for each additional started km. We will call you with the fee and full total before accepting. You can decline the quote.':`<strong>Suggested branch:</strong> ${esc(draft.branch||'Choose a location')}<br>${q?`<strong>Approx. straight-line distance:</strong> ${q.km.toFixed(1)} km · <strong>Estimated delivery fee:</strong> ${money(q.fee)}<br><small>${esc(q.basis)}. ${money(db.settings.minimumFee)} covers the first ${db.settings.includedKm} km; each additional started km adds ${money(db.settings.perKm)}. Staff must confirm the actual road distance and final fee.</small>`:'Set your pin to see an estimated delivery fee.'}`}</div></div>`;
+  const addressPicker = LIVE_ORDERING&&liveAddressSearchAvailable
+    ? `<div class="field"><label for="address-search">Search and select an address *</label><input id="address-search" data-field="addressQuery" type="search" autocomplete="off" placeholder="Street, barangay, or landmark" value="${esc(draft.addressQuery)}" aria-controls="address-results"><div id="address-results" class="address-results" role="listbox"></div><small class="hint">Choose a result to place the pin, or place the pin yourself. Please check its position on the map.</small></div><div class="field"><label for="address">${draft.manualAddress?'Delivery address':'Selected delivery address'} *</label><input id="address" name="address" ${draft.manualAddress?'data-field="address"':'readonly'} value="${esc(draft.address)}" required placeholder="${draft.manualAddress?'Street, barangay, house/building':'Select an address or place the pin'}"></div>${field('House, unit, or building details','addressDetails','Optional details for the rider')}<button type="button" class="btn btn-ghost" data-action="manual-address">${draft.manualAddress?'Use address search instead':'Address missing? Enter it manually'}</button>`
+    : field('Full delivery address','address','Street, barangay, house/building',true);
+  return `<div class="panel"><h3>Delivery location</h3><div class="field"><label for="town">City / municipality *</label><select id="town" name="town" data-field="town">${(LIVE_ORDERING?liveDeliveryCoverage:COVERAGE).map(name=>`<option ${draft.town===name?'selected':''}>${name}</option>`).join('')}</select></div>${addressPicker}<p class="hint">Drag the pin or tap the map to mark the exact drop-off point. Staff will verify the address and coverage before accepting.</p><div class="map" id="location-map"><div class="map-fallback">Map loading…<br>Coordinates can also be entered below.</div></div><div class="field-grid">${field('Latitude','lat','16.000000',true,'number','step="any" min="-90" max="90"')}${field('Longitude','lng','120.000000',true,'number','step="any" min="-180" max="180"')}</div><button type="button" class="btn btn-ghost" data-action="locate">◎ Use my current location</button><div style="height:14px"></div>${field('Landmark','landmark','What should the rider look for?',true)}<div class="quote-box">${LIVE_ORDERING?'<strong>Delivery fee calculated after staff selects the dispatch location.</strong><br>Rate: ₱80 for the first 3 road km, plus ₱10 for each additional started km. We will call you with the fee and full total before accepting. You can decline the quote.':`<strong>Suggested branch:</strong> ${esc(draft.branch||'Choose a location')}<br>${q?`<strong>Approx. straight-line distance:</strong> ${q.km.toFixed(1)} km · <strong>Estimated delivery fee:</strong> ${money(q.fee)}<br><small>${esc(q.basis)}. ${money(db.settings.minimumFee)} covers the first ${db.settings.includedKm} km; each additional started km adds ${money(db.settings.perKm)}. Staff must confirm the actual road distance and final fee.</small>`:'Set your pin to see an estimated delivery fee.'}`}</div></div>`;
 }
 function renderCheckout(){
   if(!cartCount()) return `<main class="shell"><div class="page-head"><h1>Your box is empty</h1><p>Add donuts before checking out.</p></div><button class="btn btn-primary" data-nav="shop">Browse the menu</button></main>`;
@@ -129,7 +136,30 @@ function settingsPanel(){const s=db.settings;return `<div class="panel"><h3>Deli
 function render(){ if(map){map.remove();map=null;marker=null;}app.innerHTML=renderHeader()+(page==='shop'?renderShop():page==='checkout'?renderCheckout():page==='orders'?renderOrders():renderStaff())+`<footer class="footer"><strong>Roma's Donuts</strong> · ${LIVE_ORDERING?'Orders are submitted for staff confirmation':'Customer ordering concept · Local interactive preview, not a live ordering service'}</footer>`;if(page==='checkout'&&draft.type==='delivery') setTimeout(initMap,0);}
 
 function initMap(){const container=document.getElementById('location-map');if(!container||!window.L)return;const {L}=window;const center=draft.pin||{lat:DEMO_CENTERS[draft.town][0],lng:DEMO_CENTERS[draft.town][1]};container.innerHTML='';map=L.map(container).setView([center.lat,center.lng],draft.pin?14:12);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);if(draft.pin){marker=L.marker([draft.pin.lat,draft.pin.lng],{draggable:true}).addTo(map);marker.on('dragend',()=>setPin(marker.getLatLng()));}map.on('click',event=>setPin(event.latlng));setTimeout(()=>map?.invalidateSize(),150);}
-function setPin(point){const lat=Number(point.lat),lng=Number(point.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng)||Math.abs(lat)>90||Math.abs(lng)>180)return;draft.pin={lat,lng};draft.lat=lat.toFixed(6);draft.lng=lng.toFixed(6);draft.quote=null;if(!LIVE_ORDERING)draft.branch=suggestedBranch(draft.pin);const latInput=document.querySelector('[name="lat"]'),lngInput=document.querySelector('[name="lng"]');if(latInput)latInput.value=draft.lat;if(lngInput)lngInput.value=draft.lng;if(LIVE_ORDERING)render();else calculateQuote();}
+function setPin(point,{lookup=true}={}){const lat=Number(point.lat),lng=Number(point.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng)||Math.abs(lat)>90||Math.abs(lng)>180)return;draft.pin={lat,lng};draft.lat=lat.toFixed(6);draft.lng=lng.toFixed(6);draft.quote=null;if(!LIVE_ORDERING)draft.branch=suggestedBranch(draft.pin);const latInput=document.querySelector('[name="lat"]'),lngInput=document.querySelector('[name="lng"]');if(latInput)latInput.value=draft.lat;if(lngInput)lngInput.value=draft.lng;if(LIVE_ORDERING){if(lookup&&liveAddressSearchAvailable&&!draft.manualAddress){draft.address='';void lookupPinAddress(lat,lng);}render();}else calculateQuote();}
+async function lookupPinAddress(lat,lng){
+  const requestId=++addressRequestId;
+  try{const result=await liveCall('address-reverse',{latitude:lat,longitude:lng});
+    if(requestId!==addressRequestId||draft.pin?.lat!==lat||draft.pin?.lng!==lng)return;
+    draft.address=result.address||'';
+    const input=document.getElementById('address');if(input)input.value=draft.address;
+    if(!draft.address)notify('Address not found. Search for a nearby street or landmark.');
+  }catch{if(requestId===addressRequestId)notify('Address lookup failed. Search for a nearby street or landmark.');}
+}
+function showAddressMatches(message=''){
+  const container=document.getElementById('address-results');if(!container)return;
+  container.innerHTML=message?`<p class="hint">${esc(message)}</p>`:addressMatches.map((item,index)=>`<button type="button" role="option" data-address-index="${index}">${esc(item.label)}</button>`).join('');
+}
+function searchAddresses(query){
+  clearTimeout(addressSearchTimer);const requestId=++addressRequestId;
+  addressMatches=[];showAddressMatches(query.trim().length<3?'Enter at least 3 characters.':'Searching…');
+  if(query.trim().length<3)return;
+  addressSearchTimer=setTimeout(async()=>{try{
+    const result=await liveCall('address-suggest',{query:query.trim()});
+    if(requestId!==addressRequestId||draft.addressQuery!==query)return;
+    addressMatches=result.suggestions||[];showAddressMatches(addressMatches.length?'':'No nearby matches. Try a street or landmark, or place a pin.');
+  }catch(failure){if(requestId===addressRequestId)showAddressMatches(failure.message);}},450);
+}
 function calculateQuote(renderAfter = true){const pin=draft.pin,branch=currentBranch();if(!pin||!branch)return;const km=haversineKm(branch,pin);draft.quote={km,fee:feeForDistance(km,db.settings.minimumFee,db.settings.perKm,db.settings.includedKm),basis:'Based on approximate branch-center pins and straight-line distance, not a road route'};if(renderAfter)render();}
 async function refreshLiveConfig(){
   try{
@@ -137,11 +167,12 @@ async function refreshLiveConfig(){
     livePickupLocations=result.pickupLocations;
     liveOrderingEnabled=result.orderingEnabled===true;
     liveDeliveryAvailable=result.deliveryAvailable===true;
+    liveAddressSearchAvailable=result.addressSearchAvailable===true;
     liveDeliveryCoverage=Array.isArray(result.deliveryCoverage)&&result.deliveryCoverage.length?result.deliveryCoverage:COVERAGE;
     liveConfigError=liveOrderingEnabled?'':'Customer ordering is not open yet.';
     if(draft.type==='delivery'&&!liveDeliveryAvailable)draft.type='pickup';
     draft.branch=livePickupLocations.some(location=>location.name===draft.branch)?draft.branch:livePickupLocations[0]?.name||'';
-  }catch(failure){liveConfigError=failure.message;livePickupLocations=[];liveOrderingEnabled=false;liveDeliveryAvailable=false;draft.branch='';draft.type='pickup';}
+  }catch(failure){liveConfigError=failure.message;livePickupLocations=[];liveOrderingEnabled=false;liveDeliveryAvailable=false;liveAddressSearchAvailable=false;draft.branch='';draft.type='pickup';}
   render();
 }
 async function refreshLiveOrders(){
@@ -161,7 +192,7 @@ async function submitLiveOrder(form){
   }
   if(draft.type==='delivery'&&(!draft.pin||!liveDeliveryCoverage.includes(draft.town)
     ||!String(form.get('address')||'').trim()||!String(form.get('landmark')||'').trim())){
-    error='Set a delivery pin, covered municipality, full address, and landmark.';render();return;
+    error='Set a delivery pin, covered municipality, address, and landmark.';render();return;
   }
   const selectedHours=draft.type==='pickup'?livePickupLocations.find(location=>location.name===draft.branch)?.hours:null;
   if(!availableSlots(String(form.get('date')||''),new Date(),draft.type==='delivery'?DELIVERY_HOURS:selectedHours||null).includes(String(form.get('time')||''))){
@@ -179,7 +210,7 @@ async function submitLiveOrder(form){
     const result=await liveCall('submit',{
       ...credential,fulfillmentType:draft.type,
       ...(draft.type==='pickup'?{pickupLocation:draft.branch}:{municipality:draft.town,
-        address:String(form.get('address')||''),landmark:String(form.get('landmark')||''),
+        address:[String(form.get('address')||'').trim(),String(form.get('addressDetails')||'').trim()].filter(Boolean).join(', ').slice(0,300),landmark:String(form.get('landmark')||''),
         latitude:draft.pin.lat,longitude:draft.pin.lng}),
       name:String(form.get('name')||''),phone:String(form.get('phone')||''),
       date:String(form.get('date')||''),time:String(form.get('time')||''),
@@ -211,7 +242,8 @@ function createOrder(form){if(LIVE_ORDERING){void submitLiveOrder(form);return;}
 
 function updateLiveTotals(){document.querySelectorAll('[data-subtotal]').forEach(el=>{el.textContent=money(subtotal());});document.querySelectorAll('[data-cart-count]').forEach(el=>{el.textContent=`${cartCount()} ${cartCount()===1?'item':'items'}`;});document.querySelectorAll('[data-line-total]').forEach(el=>{const p=findProduct(el.dataset.lineTotal);if(p)el.textContent=money((cart[p.id]||0)*p.price);});}
 
-app.addEventListener('click',event=>{const target=event.target.closest('button');if(!target)return;if(target.dataset.boxPhoto){boxPreviews[target.dataset.boxGroup]=target.dataset.boxPhoto;render();return;}if(target.dataset.nav){if(LIVE_ORDERING&&target.dataset.nav==='staff'){window.location.assign('/public-ordering-staff.html');return;}nav(target.dataset.nav);return;}if(target.dataset.action==='scroll-menu'){document.getElementById('menu')?.scrollIntoView({behavior:'smooth'});return;}if(target.dataset.catalog){catalogMode=target.dataset.catalog;searchTerm='';render();document.getElementById('menu')?.scrollIntoView();return;}if(target.dataset.packaging){draft.packaging=target.dataset.packaging;render();return;}if(target.dataset.action==='add'||target.dataset.action==='dec'){const id=target.dataset.id;const product=findProduct(id);if(!product)return;if(product.type==='box')boxPreviews[product.groupId]=id;cart[id]=Math.min(999,Math.max(0,(cart[id]||0)+(target.dataset.action==='add'?1:-1)));render();return;}if(target.dataset.type){draft.type=target.dataset.type;if(draft.type==='delivery'&&!BRANCH_NAMES.includes(draft.branch))draft.branch='Dagupan City';draft.quote=null;render();return;}if(target.dataset.select){selectedId=target.dataset.select;render();return;}if(target.dataset.staff){staffView=target.dataset.staff;render();return;}if(target.dataset.openStaff){selectedId=target.dataset.openStaff;staffView='selected';render();return;}if(target.dataset.action==='locate'){if(!navigator.geolocation){notify('Location is unavailable in this browser');return;}navigator.geolocation.getCurrentPosition(pos=>{setPin({lat:pos.coords.latitude,lng:pos.coords.longitude});notify('Pin placed at your current location');},()=>notify('Location permission was not granted'),{enableHighAccuracy:true,timeout:10000});}});
+app.addEventListener('click',event=>{const target=event.target.closest('button');if(!target)return;if(target.dataset.addressIndex!==undefined){const item=addressMatches[Number(target.dataset.addressIndex)];if(item){++addressRequestId;draft.address=item.label;draft.addressQuery=item.label;addressMatches=[];setPin({lat:item.latitude,lng:item.longitude},{lookup:false});}return;}if(target.dataset.boxPhoto){boxPreviews[target.dataset.boxGroup]=target.dataset.boxPhoto;render();return;}if(target.dataset.nav){if(LIVE_ORDERING&&target.dataset.nav==='staff'){window.location.assign('/public-ordering-staff.html');return;}nav(target.dataset.nav);return;}if(target.dataset.action==='scroll-menu'){document.getElementById('menu')?.scrollIntoView({behavior:'smooth'});return;}if(target.dataset.catalog){catalogMode=target.dataset.catalog;searchTerm='';render();document.getElementById('menu')?.scrollIntoView();return;}if(target.dataset.packaging){draft.packaging=target.dataset.packaging;render();return;}if(target.dataset.action==='add'||target.dataset.action==='dec'){const id=target.dataset.id;const product=findProduct(id);if(!product)return;if(product.type==='box')boxPreviews[product.groupId]=id;cart[id]=Math.min(999,Math.max(0,(cart[id]||0)+(target.dataset.action==='add'?1:-1)));render();return;}if(target.dataset.type){draft.type=target.dataset.type;if(draft.type==='delivery'&&!BRANCH_NAMES.includes(draft.branch))draft.branch='Dagupan City';draft.quote=null;render();return;}if(target.dataset.select){selectedId=target.dataset.select;render();return;}if(target.dataset.staff){staffView=target.dataset.staff;render();return;}if(target.dataset.openStaff){selectedId=target.dataset.openStaff;staffView='selected';render();return;}if(target.dataset.action==='locate'){if(!navigator.geolocation){notify('Location is unavailable in this browser');return;}navigator.geolocation.getCurrentPosition(pos=>{setPin({lat:pos.coords.latitude,lng:pos.coords.longitude});notify('Pin placed at your current location');},()=>notify('Location permission was not granted'),{enableHighAccuracy:true,timeout:10000});}});
+app.addEventListener('click',event=>{if(event.target.closest('[data-action="manual-address"]')){draft.manualAddress=!draft.manualAddress;draft.address='';render();}});
 app.addEventListener('click',event=>{
   const button=event.target.closest('[data-print-receipt]');
   if(!button||!LIVE_ORDERING)return;
@@ -225,8 +257,9 @@ app.addEventListener('click',event=>{
     printWindow.document.open();printWindow.document.write(html);printWindow.document.close();
   }catch(failure){notify(failure.message);}
 });
-app.addEventListener('input',event=>{const el=event.target;if(el.dataset.qty){const qty=Math.min(999,Math.max(0,Math.floor(Number(el.value)||0)));cart[el.dataset.qty]=qty;updateLiveTotals();return;}if(el.id==='menu-search'){searchTerm=el.value;const start=el.selectionStart;render();const replacement=document.getElementById('menu-search');replacement?.focus();replacement?.setSelectionRange(start,start);return;}if(el.dataset.field&&el.dataset.field!=='lat'&&el.dataset.field!=='lng')draft[el.dataset.field]=el.value;});
-app.addEventListener('change',event=>{const el=event.target;if(el.dataset.qty){const qty=Math.min(999,Math.max(0,Math.floor(Number(el.value)||0)));cart[el.dataset.qty]=qty;render();return;}if(el.dataset.status){const order=db.orders.find(o=>o.id===el.dataset.status);if(order){order.status=el.value;save();render();notify('Preview status updated');}return;}if(!el.dataset.field)return;draft[el.dataset.field]=el.value;if(el.dataset.field==='date'||el.dataset.field==='town'||el.dataset.field==='branch'){if(el.dataset.field==='town'){draft.pin=null;draft.quote=null;}if(el.dataset.field==='branch'&&draft.pin){draft.quote=null;calculateQuote();}else render();}if(el.dataset.field==='lat'||el.dataset.field==='lng'){const lat=Number(document.querySelector('[name="lat"]')?.value),lng=Number(document.querySelector('[name="lng"]')?.value);if(Number.isFinite(lat)&&Number.isFinite(lng)&&lat!==0&&lng!==0)setPin({lat,lng});}});
+app.addEventListener('input',event=>{const el=event.target;if(el.dataset.qty){const qty=Math.min(999,Math.max(0,Math.floor(Number(el.value)||0)));cart[el.dataset.qty]=qty;updateLiveTotals();return;}if(el.id==='menu-search'){searchTerm=el.value;const start=el.selectionStart;render();const replacement=document.getElementById('menu-search');replacement?.focus();replacement?.setSelectionRange(start,start);return;}if(el.dataset.field&&el.dataset.field!=='lat'&&el.dataset.field!=='lng'){draft[el.dataset.field]=el.value;if(el.dataset.field==='addressQuery')searchAddresses(el.value);}});
+app.addEventListener('input',event=>{if(event.target.id==='address-search'&&draft.address&&event.target.value!==draft.address){draft.address='';const selected=document.getElementById('address');if(selected)selected.value='';}});
+app.addEventListener('change',event=>{const el=event.target;if(el.dataset.qty){const qty=Math.min(999,Math.max(0,Math.floor(Number(el.value)||0)));cart[el.dataset.qty]=qty;render();return;}if(el.dataset.status){const order=db.orders.find(o=>o.id===el.dataset.status);if(order){order.status=el.value;save();render();notify('Preview status updated');}return;}if(!el.dataset.field)return;draft[el.dataset.field]=el.value;if(el.dataset.field==='date'||el.dataset.field==='town'||el.dataset.field==='branch'){if(el.dataset.field==='town'){++addressRequestId;draft.pin=null;draft.quote=null;draft.address='';draft.addressQuery='';addressMatches=[];}if(el.dataset.field==='branch'&&draft.pin){draft.quote=null;calculateQuote();}else render();}if(el.dataset.field==='lat'||el.dataset.field==='lng'){const lat=Number(document.querySelector('[name="lat"]')?.value),lng=Number(document.querySelector('[name="lng"]')?.value);if(Number.isFinite(lat)&&Number.isFinite(lng)&&lat!==0&&lng!==0)setPin({lat,lng});}});
 app.addEventListener('submit',event=>{event.preventDefault();const form=event.target;if(form.id==='order-form'){createOrder(new FormData(form));return;}if(form.dataset.chat){if(LIVE_ORDERING){void sendLiveChat(form);return;}const order=db.orders.find(o=>o.id===form.dataset.chat);const message=String(new FormData(form).get('message')||'').trim();if(order&&message){order.messages.push({from:form.dataset.from,text:message,at:new Date().toISOString()});save();render();document.querySelector('.chat-messages')?.scrollTo(0,99999);}return;}if(form.id==='settings-form'){const data=new FormData(form);const next={minimumFee:Number(data.get('minimumFee')),perKm:Number(data.get('perKm')),includedKm:Number(data.get('includedKm'))};if(Object.values(next).some(v=>!Number.isFinite(v)||v<0)){notify('Enter valid nonnegative fee values');return;}Object.assign(db.settings,next);for(const name of BRANCH_NAMES){const lat=Number(data.get(`lat:${name}`)),lng=Number(data.get(`lng:${name}`));if(Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180)db.settings.branches[name]={lat,lng,enabled:true};}if(draft.type==='delivery'&&draft.pin){draft.quote=null;draft.branch=suggestedBranch(draft.pin);if(draft.branch)calculateQuote(false);}save();notify('Preview settings saved');render();}});
 window.addEventListener('storage',event=>{if(event.key===KEY){db=load();if(draft.type==='delivery'&&draft.pin){draft.quote=null;draft.branch=suggestedBranch(draft.pin);if(draft.branch)calculateQuote(false);}render();}});
 render();

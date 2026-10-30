@@ -3,6 +3,7 @@ import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
 import {canPerformStaffAction} from './staff-access.mjs'
+import {addressSuggestions, reverseAddress, roadRoute, validDeliveryPoint} from './delivery-routing.mjs'
 import {
   cleanText, DELIVERY_COVERAGE, isOrderDateAllowed, pricedItems, PICKUP_HOURS, validatePickupSchedule, validateSchedule, validAccessToken,
   validPhone, validRequestId,
@@ -138,8 +139,33 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       .filter(location => location.hours)
     return reply(200, {ok:true, pickupLocations,
       deliveryAvailable:SUBMISSIONS_ALLOWED_BY_SERVER && DELIVERY_ALLOWED_BY_SERVER && pickupLocations.length > 0,
+      addressSearchAvailable:Boolean(Deno.env.get('OPENROUTESERVICE_API_KEY')),
       deliveryCoverage:DELIVERY_COVERAGE,
       orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call'})
+  }
+
+  if (action === 'address-suggest' || action === 'address-reverse') {
+    if (!DELIVERY_ALLOWED_BY_SERVER) return reply(422, {ok:false, message:'Delivery requests are not open yet.'})
+    const apiKey = Deno.env.get('OPENROUTESERVICE_API_KEY') || ''
+    if (!apiKey) return reply(503, {ok:false, message:'Address lookup is temporarily unavailable.'})
+    const rawIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || request.headers.get('cf-connecting-ip') || 'unknown'
+    const scope = action === 'address-suggest' ? 'address-suggest' : 'address-reverse'
+    const [individual,global] = await Promise.all([
+      consumeRateLimit(admin,rateSecret,scope,rawIp,60,3600),
+      consumeRateLimit(admin,rateSecret,`${scope}-global`,'all',100,21600),
+    ])
+    if (individual === 'unavailable' || global === 'unavailable') return reply(503, {ok:false, message:'Address lookup is temporarily unavailable.'})
+    if (individual === 'limited' || global === 'limited') return reply(429, {ok:false, message:'Address search limit reached. Please try later or place the map pin.'})
+    try {
+      if (action === 'address-suggest') {
+        const query = cleanText(body.query,100)
+        if (query.length < 3) return reply(422, {ok:false, message:'Enter at least three characters.'})
+        return reply(200,{ok:true, suggestions:await addressSuggestions(query,apiKey)})
+      }
+      const latitude = Number(body.latitude), longitude = Number(body.longitude)
+      if (!validDeliveryPoint(latitude,longitude)) return reply(422, {ok:false, message:'Place the pin within the delivery area.'})
+      return reply(200,{ok:true, address:await reverseAddress(latitude,longitude,apiKey)})
+    } catch { return reply(503,{ok:false,message:'Address lookup is temporarily unavailable. Confirm the map pin and enter your address.'}) }
   }
 
   if (action === 'submit') {
@@ -226,7 +252,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set','staff-delivery-quote'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set','staff-delivery-route','staff-delivery-quote'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
   if (!canPerformStaffAction(staff.accessLevel, action)) {
@@ -300,7 +326,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     return unavailable || !control || eventsError || originsError
       ? reply(503, {ok:false, message:'Order queue or ordering status is unavailable.'})
       : reply(200, {ok:true, orders, orderCounts, accessLevel:staff.accessLevel,
-        orderingControl:control, orderingEvents:events || [], deliveryOrigins:origins || []})
+        orderingControl:control, orderingEvents:events || [], deliveryOrigins:origins || [],
+        automaticDeliveryQuoteAvailable:Boolean(Deno.env.get('OPENROUTESERVICE_API_KEY'))})
   }
   const orderId = cleanText(body.orderId, 40)
   if (!validRequestId(orderId)) return reply(400, {ok:false, message:'Invalid order ID.'})
@@ -316,16 +343,36 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       ? reply(409, {ok:false, message:'Phone confirmation was not saved. Refresh the order and check its status.'})
       : reply(200, {ok:true})
   }
-  if (action === 'staff-delivery-quote') {
+  if (action === 'staff-delivery-route' || action === 'staff-delivery-quote') {
     const origin = cleanText(body.originLocation, 120)
-    const roadKm = Number(body.roadKm)
-    if (!origin || !Number.isFinite(roadKm) || roadKm < 0 || roadKm > 100
-      || Math.round(roadKm * 1000) !== roadKm * 1000) {
-      return reply(422, {ok:false, message:'Choose a dispatch location and enter road distance in km, up to three decimals.'})
+    if (!origin) return reply(422,{ok:false,message:'Choose a dispatch location.'})
+    const apiKey = Deno.env.get('OPENROUTESERVICE_API_KEY') || ''
+    const [{data:dispatch,error:dispatchError},{data:destination,error:destinationError}] = await Promise.all([
+      admin.from('customer_pickup_locations').select('latitude,longitude').eq('name',origin).eq('is_active',true).maybeSingle(),
+      admin.from('customer_orders').select('fulfillment_type,status,delivery_latitude,delivery_longitude,subtotal')
+        .eq('id',orderId).maybeSingle(),
+    ])
+    if (dispatchError || destinationError || !dispatch || !destination
+      || destination.fulfillment_type !== 'delivery' || destination.status !== 'pending_confirmation') {
+      return reply(409,{ok:false,message:'The dispatch point or order is no longer available. Refresh the order.'})
     }
+    let route
+    if (apiKey) {
+      try {
+        route = await roadRoute(dispatch,{latitude:destination.delivery_latitude,longitude:destination.delivery_longitude},apiKey)
+      } catch { return reply(503,{ok:false,message:'A road route could not be calculated. Check both pins and try again.'}) }
+    } else if (action === 'staff-delivery-quote') {
+      const roadKm = Number(body.roadKm)
+      if (!Number.isFinite(roadKm) || roadKm < 0 || roadKm > 100 || Math.round(roadKm*1000)!==roadKm*1000) {
+        return reply(422,{ok:false,message:'Enter the verified road distance in km, up to three decimals.'})
+      }
+      route = {km:roadKm}
+    } else return reply(503,{ok:false,message:'Automatic road routing is not configured yet.'})
+    if (action === 'staff-delivery-route') return reply(200,{ok:true,roadKm:route.km,deliveryFee:route.fee,
+      total:Number(destination.subtotal)+route.fee})
     const {data, error} = await admin.rpc('customer_set_delivery_quote', {
       p_order_id:orderId, p_actor_admin_user_id:staff.id,
-      p_origin_location:origin, p_road_km:roadKm,
+      p_origin_location:origin, p_road_km:route.km,
     })
     return error || data !== true
       ? reply(409, {ok:false, message:'Delivery quote was not saved. Refresh the order and check its status.'})
