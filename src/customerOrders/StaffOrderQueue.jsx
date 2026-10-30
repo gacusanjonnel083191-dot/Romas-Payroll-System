@@ -13,7 +13,8 @@ const ACTIONS = {
   pending_confirmation:['accepted','declined','cancelled'],
   accepted:['preparing','cancelled'],
   preparing:['ready','cancelled'],
-  ready:['out_for_delivery','cancelled'],
+  ready:['out_for_delivery','completed','cancelled'],
+  out_for_delivery:['completed'],
 }
 const ACTION_LABELS = {accepted:'Accept order',declined:'Decline request',cancelled:'Cancel order',
   preparing:'Start preparing',ready:'Mark ready',out_for_delivery:'Out for delivery'}
@@ -59,7 +60,7 @@ function Login({client, stagingPreview}) {
   </div></main>
 }
 
-export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false, onOrdersChange}) {
+export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false, onOrdersChange, onPaymentRecorded}) {
   const client = useMemo(() => providedClient || (url && key ? createClient(url, key, {
     auth: {persistSession:true, autoRefreshToken:true},
   }) : null), [providedClient])
@@ -160,6 +161,51 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     return ()=>{active=false}
   },[session,selectedId,detailRefresh,request])
 
+  // Keep the selected conversation current without resetting the staff member's draft.
+  useEffect(()=>{
+    if (!session || !selectedId) return undefined
+    let active = true
+    let inFlight = false
+    const updateConversation = async () => {
+      if (!active || inFlight || document.visibilityState === 'hidden') return
+      inFlight = true
+      try {
+        const result = await request('staff-get',{orderId:selectedId})
+        if (active) setDetail(result.order)
+      } catch {
+        // The normal fetch and Refresh button surface errors; a background
+        // retry should not replace an existing conversation with an error.
+      } finally { inFlight = false }
+    }
+    const timer = window.setInterval(updateConversation, 8000)
+    document.addEventListener('visibilitychange', updateConversation)
+    return ()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange', updateConversation)}
+  },[session,selectedId,request])
+
+  // Pick up newly submitted orders and status changes while this page stays open.
+  useEffect(()=>{
+    if (!session) return undefined
+    let active = true
+    let inFlight = false
+    const updateQueue = async () => {
+      if (!active || inFlight || document.visibilityState === 'hidden') return
+      inFlight = true
+      try {
+        const result = await request('staff-list')
+        if (!active) return
+        setOrders(result.orders)
+        setOrderCounts(result.orderCounts || {})
+        onOrdersChange?.(result.orders)
+        setOrderingControl(result.orderingControl)
+      } catch {
+        // Preserve the last good queue until the next poll or manual Refresh.
+      } finally { inFlight = false }
+    }
+    const timer = window.setInterval(updateQueue, 20000)
+    document.addEventListener('visibilitychange', updateQueue)
+    return ()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange', updateQueue)}
+  },[session,request,onOrdersChange])
+
   useEffect(()=>{
     if (!routeEligible || !routeOrderId || !deliveryOrigin || accessLevel!=='full'
       || !automaticDeliveryQuoteAvailable) {
@@ -241,6 +287,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
         orderId:detail.id,paymentMethod,
         referenceNumber:paymentMethod==='Cash'?'':paymentReference.trim(),
       })
+      onPaymentRecorded?.()
       setPaymentReference('');setPaymentConfirmed(false)
       await refresh()
     } catch(failure){setError(failure.message)}
@@ -373,11 +420,12 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           <label>Reason or review note<input value={statusNote} onChange={event=>setStatusNote(event.target.value)} maxLength={500} /></label>
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
             .filter(action=>(action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
+              && (action!=='completed'||(detail.fulfillment_type==='pickup'&&detail.status==='ready')||(detail.fulfillment_type==='delivery'&&detail.status==='out_for_delivery'))
               && (action!=='cancelled'||detail.payment_status!=='paid'))
-            .map(action=><button key={action} disabled={busy||(action==='accepted'&&(!detail.phone_verified_at||(detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at)))} onClick={()=>void updateStatus(action)}>{ACTION_LABELS[action] || action.replaceAll('_',' ')}</button>)}</div>
-          {detail.payment_status==='unpaid' && ['accepted','preparing','ready','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordPayment}>
+            .map(action=><button key={action} disabled={busy||(action==='accepted'&&(!detail.phone_verified_at||(detail.fulfillment_type==='delivery'&&!detail.delivery_quoted_at)))} onClick={()=>void updateStatus(action)}>{action==='completed'?(detail.fulfillment_type==='delivery'?'Mark delivered':'Mark picked up'):(ACTION_LABELS[action] || action.replaceAll('_',' '))}</button>)}</div>
+          {detail.payment_status==='unpaid' && ['accepted','preparing','ready','out_for_delivery','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordPayment}>
             <h3>Confirm payment and record online sale</h3>
-            <p className="staff-hint">Record this once, only after receiving and checking the full {money(detail.total)} payment. The sale will appear separately from the outlet POS.</p>
+            <p className="staff-hint">Record this once, only after receiving and checking the full {money(detail.total)} payment. This automatically adds one separate online sale to Daily Sales, apart from the outlet POS.</p>
             <label>Payment method<select value={paymentMethod} onChange={event=>{setPaymentMethod(event.target.value);setPaymentReference('');setPaymentConfirmed(false)}}>
               {['Cash','GCash','Maya','Bank Transfer','QR PH'].map(method=><option key={method}>{method}</option>)}
             </select></label>
