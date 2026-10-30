@@ -37514,7 +37514,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
- {activeTab==='customerOrders' && ONLINE_FORECAST_ENABLED && <div className="customer-order-module"><StaffOrderQueue client={supabase} serviceUrl={supabaseUrl} publishableKey={supabaseKey} onOrdersChange={updateCustomerOrderCount} embedded /></div>}
+ {activeTab==='customerOrders' && ONLINE_FORECAST_ENABLED && <div className="customer-order-module"><StaffOrderQueue client={supabase} serviceUrl={supabaseUrl} publishableKey={supabaseKey} onOrdersChange={updateCustomerOrderCount} onPaymentRecorded={()=>{loadDailySalesOnlinePayments();loadDailySales()}} embedded /></div>}
  {activeTab==='cartLoans' && isOwnerRole && <RollingCartLoans supabase={supabase} today={today} />}
 
  {/* DASHBOARD */}
