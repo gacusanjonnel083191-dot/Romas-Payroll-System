@@ -18,11 +18,44 @@ const ACTIONS = {
 const ACTION_LABELS = {accepted:'Accept order',declined:'Decline request',cancelled:'Cancel order',
   preparing:'Start preparing',ready:'Mark ready',out_for_delivery:'Out for delivery'}
 
-function Login() {
+function Login({client, stagingPreview}) {
+  const [email,setEmail] = useState('')
+  const [password,setPassword] = useState('')
+  const [busy,setBusy] = useState(false)
+  const [error,setError] = useState('')
+
+  async function signIn(event) {
+    event.preventDefault()
+    if (!client || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const {error:signInError} = await client.auth.signInWithPassword({
+        email:email.trim(), password,
+      })
+      if (signInError) throw signInError
+      setPassword('')
+    } catch (failure) {
+      setError(failure.message || 'Sign-in failed. Check your staging test account.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return <main className="staff-login"><div className="staff-panel">
     <p className="staff-kicker">ROMA'S DONUTS</p><h1>Customer order queue</h1>
-    <p>Sign in to Roma’s main business system to use the same account here.</p>
-    <a href="/">Open main system sign-in</a>
+    {stagingPreview ? <>
+      <p>Staging test sign-in. Use your staging test account.</p>
+      <form onSubmit={signIn}>
+        <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="username" required /></label>
+        <label>Password<input type="password" value={password} onChange={event=>setPassword(event.target.value)} autoComplete="current-password" required /></label>
+        {error && <p className="staff-error" role="alert">{error}</p>}
+        <button type="submit" disabled={busy}>{busy?'Signing in…':'Sign in to staging'}</button>
+      </form>
+    </> : <>
+      <p>Sign in to Roma’s main business system to use the same account here.</p>
+      <a href="/">Open main system sign-in</a>
+    </>}
   </div></main>
 }
 
@@ -245,7 +278,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
   </div></main>
-  if (!session) return <Login />
+  if (!session) return <Login client={client} stagingPreview={!embedded && import.meta.env.DEV && import.meta.env.VITE_STAGING_STAFF_LOGIN === 'true'} />
 
   return <main className={`staff-app${embedded?' staff-embedded':''}`}>
     <header><div><p className="staff-kicker">ROMA'S DONUTS · STAFF</p><h1>Customer orders</h1><p>{accessLevel==='full'?'Full access':'View only'}</p></div>
