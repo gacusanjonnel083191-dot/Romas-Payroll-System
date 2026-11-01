@@ -2,6 +2,7 @@ import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
+import {verifyTurnstileToken} from './turnstile.mjs'
 import {canPerformStaffAction} from './staff-access.mjs'
 import {addressSuggestions, reverseAddress, roadRoute, validDeliveryPoint} from './delivery-routing.mjs'
 import {
@@ -13,6 +14,8 @@ const SUBMISSIONS_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_
 const DELIVERY_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_DELIVERY_ENABLED') === 'true'
 const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,delivery_origin_location,delivery_quoted_at,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
+const TURNSTILE_SITE_KEY = Deno.env.get('PUBLIC_ORDERING_TURNSTILE_SITE_KEY') || ''
+const TURNSTILE_SECRET_KEY = Deno.env.get('PUBLIC_ORDERING_TURNSTILE_SECRET_KEY') || ''
 
 type Client = ReturnType<typeof createClient<any>>
 type Body = Record<string, unknown>
@@ -129,6 +132,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   const action = cleanText(body.action, 40)
 
   if (action === 'config') {
+    if (Boolean(TURNSTILE_SITE_KEY) !== Boolean(TURNSTILE_SECRET_KEY))
+      return reply(503, {ok:false, message:'Checkout verification is temporarily unavailable.'})
     const [{data, error}, control] = await Promise.all([
       admin.from('customer_pickup_locations').select('name,address').eq('is_active', true).order('name'),
       orderingControl(admin),
@@ -141,7 +146,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       deliveryAvailable:SUBMISSIONS_ALLOWED_BY_SERVER && DELIVERY_ALLOWED_BY_SERVER && pickupLocations.length > 0,
       addressSearchAvailable:Boolean(Deno.env.get('OPENROUTESERVICE_API_KEY')),
       deliveryCoverage:DELIVERY_COVERAGE,
-      orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call'})
+      orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call',
+      turnstileSiteKey:TURNSTILE_SITE_KEY})
   }
 
   if (action === 'address-suggest' || action === 'address-reverse') {
@@ -171,6 +177,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   if (action === 'submit') {
     const control = await orderingControl(admin)
     if (!control?.enabled) return reply(503, {ok:false, message:'Customer ordering is not open yet.'})
+    if (Boolean(TURNSTILE_SITE_KEY) !== Boolean(TURNSTILE_SECRET_KEY))
+      return reply(503, {ok:false, message:'Checkout verification is temporarily unavailable.'})
     const requestId = body.requestId
     const accessToken = body.accessToken
     if (!validRequestId(requestId) || !validAccessToken(accessToken)) return reply(400, {ok:false, message:'Invalid order request.'})
@@ -185,9 +193,26 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
     if (!isOrderDateAllowed(body.date)) return reply(422, {ok:false, message:'Same-day orders are unavailable. Order by 3:00 PM Philippine time for next-day pickup, or choose a later date.'})
-    const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
-    if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
-    if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})
+    const forwardedIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || ''
+    const ipLimit = forwardedIp
+      ? await consumeRateLimit(admin, rateSecret, 'submit-ip-hour', forwardedIp, 30, 3600) : 'allowed'
+    if (ipLimit === 'unavailable')
+      return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
+    if (ipLimit === 'limited')
+      return reply(429, {ok:false, message:'Too many order requests. Please call Roma’s Donuts if you need help.'})
+    if (TURNSTILE_SECRET_KEY) {
+      const hostname = (() => {try {return new URL(origin || '').hostname} catch {return ''}})()
+      if (!await verifyTurnstileToken(body.turnstileToken, TURNSTILE_SECRET_KEY, hostname))
+        return reply(422, {ok:false, message:'Security check expired or could not be verified. Please try again.'})
+    }
+    const phoneKey = normalizePhoneForLimit(phone)
+    const phoneHourly = await consumeRateLimit(admin, rateSecret, 'submit-phone-hour', phoneKey, 4, 3600)
+    const phoneDaily = phoneHourly === 'allowed'
+      ? await consumeRateLimit(admin, rateSecret, 'submit-phone-day', phoneKey, 10, 86400) : phoneHourly
+    if (phoneHourly === 'unavailable' || phoneDaily === 'unavailable')
+      return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
+    if (phoneHourly === 'limited' || phoneDaily === 'limited')
+      return reply(429, {ok:false, message:'Too many order requests. Please call Roma’s Donuts if you need help.'})
     let scheduledAt: string | null = null
     let details: Record<string, unknown> = {}
     if (fulfillmentType === 'pickup') {
