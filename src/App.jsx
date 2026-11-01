@@ -25885,7 +25885,7 @@ async function approveTimeAdj(req) {
  // voided in another tab or by another admin session.
  const { data:freshRequestRows, error:freshRequestError } = await supabase
   .from('time_adjustment_requests')
-  .select('id,status,attendance_date,request_type,employee_id,minutes,supervisor_reviewed_by,supervisor_reviewed_at')
+  .select('id,status,attendance_date,request_type,employee_id,minutes')
   .eq('id', req.id)
   .limit(1)
  if (freshRequestError) {
@@ -25902,7 +25902,16 @@ async function approveTimeAdj(req) {
   return
  }
 
- if(isProductionOT&&(!freshRequest.supervisor_reviewed_by||!freshRequest.supervisor_reviewed_at)){showToast('The saved supervisor verification is missing. Refresh and review.','red');return}
+ if(isProductionOT){
+  const {data:reviewProof,error:reviewProofError}=await supabase
+   .from('time_adjustment_requests')
+   .select('supervisor_reviewed_by,supervisor_reviewed_at')
+   .eq('id',req.id).maybeSingle()
+  if(reviewProofError||!reviewProof?.supervisor_reviewed_by||!reviewProof?.supervisor_reviewed_at){
+   showToast('Owner approval blocked: supervisor verification is not saved, or the approval database migration has not been installed.','red')
+   return
+  }
+ }
 
  let validation
  try {
@@ -39259,7 +39268,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {resolvedFromPreviousDay && <p style={{ margin:'4px 0', padding:'7px 9px', background:'#eef8ff', border:'1px solid #b9ddff', borderRadius:'8px', color:'#1261a0', fontSize:'11px', fontWeight:'800' }}>OVERNIGHT SHIFT MATCH: The attendance record is correctly stored under the previous-day shift-start date, {resolvedAttendanceDate}.</p>}
  <p style={cps}>Employee Reason: <em>"{displayReason || 'No employee reason'}"</em></p>
  {productionOT&&req.status==='pending'&&<p style={{...cps,color:needsOwner?'#237842':'#b36b00',fontWeight:'800'}}>Approval stage: {needsOwner?'Supervisor verified — waiting for Owner final approval':'Awaiting production supervisor — not payroll eligible'}</p>}
- {productionOT&&req.supervisor_reviewed_at&&<div style={{padding:'9px 10px',background:'#eefaf1',border:'1px solid #a8d9b3',borderRadius:'8px',fontSize:'11px',margin:'8px 0'}}><strong>Supervisor verified:</strong> {req.supervisor_reviewed_name||'Supervisor'} · {new Date(req.supervisor_reviewed_at).toLocaleString('en-PH')}<p style={{margin:'3px 0 0'}}>{req.supervisor_review_note||''}</p></div>
+ {productionOT&&req.supervisor_reviewed_at&&<div style={{padding:'9px 10px',background:'#eefaf1',border:'1px solid #a8d9b3',borderRadius:'8px',fontSize:'11px',margin:'8px 0'}}><strong>Supervisor verified:</strong> {req.supervisor_reviewed_name||'Supervisor'} · {new Date(req.supervisor_reviewed_at).toLocaleString('en-PH')}<p style={{margin:'3px 0 0'}}>{req.supervisor_review_note||''}</p></div>}
  <div style={{ background:'white', border:`1.5px solid ${approvalBlocked?'#ffd0d0':cardColor}`, borderRadius:'12px', padding:'12px', margin:'10px 0' }}>
  {isMealBreakRequest ? (
   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
