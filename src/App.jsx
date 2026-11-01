@@ -20444,7 +20444,9 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   setOtRequestType('overtime')
   return
  }
- if (!otRequestReason || !otRequestDate) { alert('Please select a date and enter a reason.'); return }
+ const detailedOTReason=String(otRequestReason||'').trim()
+ if(!detailedOTReason||!otRequestDate){alert('Please select a date and enter a reason.');return}
+ if(otRequestType==='overtime'&&(detailedOTReason.length<15||['operational requirements / volume of work','rush order / client deadline','staff shortage / manpower gap','management request','inventory or restocking task','others'].includes(detailedOTReason.toLowerCase()))){alert('Describe the actual overtime tasks performed and why the extra work was required (minimum 15 characters). Generic reasons are not accepted.');return}
  if (otRequestType === 'meal_break' && !mealBreakAttestation) {
   alert('Please confirm that you actually worked continuously and did not take a meal break for this attendance shift.')
   return
@@ -20563,7 +20565,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
    return
   }
   alert(otRequestType === 'overtime'
-   ? `Overtime request filed for the system-locked actual range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)}. ${safeNum(preview?.rangeValidation?.filedRawMinutes, exactMinutes)} actual minute(s) convert to ${exactMinutes} payable minute(s) under the attendance-date OT policy, under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
+   ? `Overtime request filed for the system-locked actual range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)}. ${safeNum(preview?.rangeValidation?.filedRawMinutes, exactMinutes)} actual minute(s) convert to ${exactMinutes} payable minute(s) under the attendance-date OT policy, under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request awaits supervisor verification for production employees and owner final approval before payroll.`
    : `No Meal Break review filed for ${canonicalAttendanceDate}. Payroll remains held until the continuous work is approved or the missing break punch is corrected.`
   )
   setOtRequestReason('')
@@ -25838,7 +25840,28 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  async function confirmNoMealBreakFromExistingTimeAdj() {
  showToast('New No Meal Break filings are no longer allowed.', 'red')
  }
- async function approveTimeAdj(req) {
+ async function forwardProductionOvertimeToOwner(req){
+ if(normalizedAdminRole!=='supervisor'||!adminAuthUser?.id){showToast('Only the signed-in production supervisor may verify overtime.','red');return}
+ const note=String(adjAdminReason[req.id]||'').trim()
+ if(note.length<10){showToast('Enter what you verified (at least 10 characters).','red');return}
+ const emp=employees.find(e=>String(e.id)===String(req.employee_id))
+ if(String(req.request_type||'').toLowerCase()!=='overtime'||String(emp?.department||'').trim().toLowerCase()!=='production'){showToast('Only production overtime can be forwarded.','red');return}
+ if(req.status!=='pending'||req.supervisor_reviewed_at){showToast('This request is no longer awaiting supervisor review. Refresh.','orange');return}
+ const validation=await getTimeAdjAdminValidation(req)
+ if(!validation?.canApprove){showToast('Cannot verify this overtime: '+(validation?.message||'Correct the attendance record.'),'red');return}
+ const {data,error}=await supabase.from('time_adjustment_requests')
+  .update({supervisor_reviewed_by:adminAuthUser.id,supervisor_reviewed_name:currentAdminLabel,supervisor_reviewed_at:new Date().toISOString(),supervisor_review_note:note})
+  .eq('id',req.id).eq('status','pending').is('supervisor_reviewed_at',null)
+  .select('id,supervisor_reviewed_by,supervisor_reviewed_name,supervisor_reviewed_at,supervisor_review_note').maybeSingle()
+ if(error){showToast('Supervisor review failed: '+error.message,'red');return}
+ if(!data){showToast('Request changed. Refresh the queue.','orange');return}
+ setTimeAdjRequests(prev=>prev.map(r=>r.id===req.id?{...r,...data}:r))
+ setAdjAdminReason(prev=>({...prev,[req.id]:''}))
+ await logAudit('PRODUCTION OT VERIFIED BY SUPERVISOR',currentAdminLabel,req.employee_name,`${req.attendance_date} | ${req.minutes} requested minutes | ${note} | Awaiting owner final approval`)
+ await createNotification(req.employee_id,req.employee_name,'overtime','Overtime Awaiting Owner',`Your production OT on ${req.attendance_date} has supervisor verification and awaits the owner. It is not yet payable.`)
+ showToast('Supervisor verification saved. Awaiting owner approval; payroll remains unchanged.')
+}
+async function approveTimeAdj(req) {
  if (req.request_type === 'meal_break' && !usesShortShiftMealPolicy(req.attendance_date)) { showToast('No Meal Break review is available only from October 11, 2026.', 'red'); return }
  if (timeAdjApprovalLockRef.current) {
   showToast('Another attendance approval is already being processed. Please wait for it to finish before approving another request.', 'orange')
@@ -25849,6 +25872,9 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const reviewNote = adjAdminReason[req.id]||''
  const requestedAttendanceDate = String(req.attendance_date || '').slice(0,10)
  const requestType = String(req.request_type || '').toLowerCase()
+ const prodEmployee=employees.find(x=>String(x.id)===String(req.employee_id))
+ const isProductionOT=requestType==='overtime'&&String(prodEmployee?.department||'').trim().toLowerCase()==='production'
+ if(isProductionOT&&(!isOwnerRole||!req.supervisor_reviewed_by||!req.supervisor_reviewed_at)){showToast('Production OT requires supervisor verification and owner final approval.','red');return}
  if (requestType === 'undertime') {
   showToast(`Undertime is deducted automatically from verified attendance in ${UNDERTIME_BLOCK_MINUTES}-minute blocks. Legacy UT records are audit-only and cannot be approved.`, 'orange')
   return
@@ -25874,6 +25900,17 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (String(freshRequest.status || '').toLowerCase() !== 'pending') {
   showToast(`Approval blocked: this request is already ${String(freshRequest.status || 'processed').toLowerCase()}. Refresh the OT / Break list.`, 'red')
   return
+ }
+
+ if(isProductionOT){
+  const {data:reviewProof,error:reviewProofError}=await supabase
+   .from('time_adjustment_requests')
+   .select('supervisor_reviewed_by,supervisor_reviewed_at')
+   .eq('id',req.id).maybeSingle()
+  if(reviewProofError||!reviewProof?.supervisor_reviewed_by||!reviewProof?.supervisor_reviewed_at){
+   showToast('Owner approval blocked: supervisor verification is not saved, or the approval database migration has not been installed.','red')
+   return
+  }
  }
 
  let validation
@@ -25977,15 +26014,16 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; credited start ${validation.metrics.creditedTimeIn}; raw span ${validation.metrics.rawSpanMinutes} min; early arrival excluded from OT ${validation.metrics.excludedEarlyMinutes || 0} min; OT-eligible paid work ${validation.metrics.paidWorkedMinutes} min; UT-counted span ${validation.metrics.undertimeSpanMinutes} min; UT break deducted ${validation.metrics.undertimeDeductedBreakMinutes} min; UT-eligible paid work ${validation.metrics.undertimePaidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min${scheduleShortageText}.`
  const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE AND POLICY'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}; raw OT ${safeNum(actualWindow.rawMinutes, 0)} min; excluded remainder ${safeNum(actualWindow.excludedMinutes, 0)} min` : `; raw UT ${validation.metrics.rawUndertimeMinutes || 0} min; block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min`}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
 
- const { error } = await supabase.from('time_adjustment_requests').update({
-  attendance_date:targetDate,
-  status:'approved',
-  minutes:exactMinutes,
-  reviewed_by:currentAdminLabel,
-  reviewed_at:new Date().toISOString(),
-  admin_reason:minuteSyncNote
- }).eq('id', req.id)
- if (error) { showToast('Failed: '+error.message,'red'); return }
+ const {data:approvedRow,error}=await supabase.from('time_adjustment_requests').update({
+   attendance_date:targetDate,
+   status:'approved',
+   minutes:exactMinutes,
+   reviewed_by:currentAdminLabel,
+   reviewed_at:new Date().toISOString(),
+   admin_reason:minuteSyncNote
+  }).eq('id',req.id).eq('status','pending').select('id').maybeSingle()
+  if(error){showToast('Approval failed: '+error.message,'red');return}
+  if(!approvedRow){showToast('Approval not saved: the request changed. Refresh and review again.','red');return}
 
  // Final concurrency guard: if another browser or admin approved a duplicate at
  // nearly the same time, only the earliest approved request is allowed to remain.
@@ -26300,6 +26338,23 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const reason = adjAdminReason[req.id]
  if (!reason?.trim()) { showToast('Please enter a reason for rejection.','red'); return }
  const requestType = String(req.request_type || '').toLowerCase()
+ const emp=employees.find(x=>String(x.id)===String(req.employee_id))
+ const prod=requestType==='overtime'&&String(emp?.department||'').trim().toLowerCase()==='production'
+ if(prod&&normalizedAdminRole==='supervisor'){
+  if(req.status!=='pending'||req.supervisor_reviewed_at||String(reason).trim().length<10){showToast('Supervisor may only reject an unreviewed pending production OT with a specific 10+ character reason.','red');return}
+  const {data,error}=await supabase.from('time_adjustment_requests')
+   .update({status:'rejected',reviewed_by:currentAdminLabel,reviewed_at:new Date().toISOString(),admin_reason:String(reason).trim()})
+   .eq('id',req.id).eq('status','pending').is('supervisor_reviewed_at',null).select('id').maybeSingle()
+  if(error){showToast('Supervisor rejection failed: '+error.message,'red');return}
+  if(!data){showToast('Request changed. Refresh.','orange');return}
+  await logAudit('PRODUCTION OT REJECTED BY SUPERVISOR',currentAdminLabel,req.employee_name,`${req.attendance_date} | ${String(reason).trim()}`)
+  await createNotification(req.employee_id,req.employee_name,'overtime','Overtime Rejected',`Your OT for ${req.attendance_date} was rejected by your supervisor: ${String(reason).trim()}`)
+  setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
+  showToast('Production overtime rejected by supervisor.','red')
+  return
+ }
+ if(prod&&!isOwnerRole){showToast('Only the production supervisor or owner may reject this overtime.','red');return}
+
  let sourceDate = String(req.attendance_date || '').slice(0,10)
  let sourceLogIds = []
  try {
@@ -26327,6 +26382,8 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
 }
 
  async function voidTimeAdj(req) {
+ const emp=employees.find(x=>String(x.id)===String(req.employee_id))
+ if(String(req.request_type||'').toLowerCase()==='overtime'&&String(emp?.department||'').trim().toLowerCase()==='production'&&!isOwnerRole){showToast('Only the owner can void or undo production overtime.','red');return}
  const reason = adjAdminReason[req.id]
  if (!reason?.trim()) { showToast('Please enter the reason for voiding or undoing this attendance record.', 'red'); return }
  const requestType = String(req.request_type || '').toLowerCase()
@@ -39150,6 +39207,13 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const releasedPayrollRecord = (payrollState.records || []).find(isReleasedPayrollRecord) || null
  const releasedPayrollCovered = !!releasedPayrollRecord
  const requestEmployee = employees.find(item => String(item.id) === String(req.employee_id)) || {}
+ const productionOT=isOvertimeRequest&&String(requestEmployee?.department||'').trim().toLowerCase()==='production'
+ const needsSupervisor=productionOT&&!req.supervisor_reviewed_at
+ const needsOwner=productionOT&&!!req.supervisor_reviewed_at
+ const supervisorCanReview=needsSupervisor&&normalizedAdminRole==='supervisor'&&req.status==='pending'
+ const finalApproverCanReview=!productionOT||(needsOwner&&isOwnerRole)
+ const productionCanReject=!productionOT||isOwnerRole||supervisorCanReview
+ const productionCanVoid=!productionOT||isOwnerRole
  const releasedCorrectionPreview = buildReleasedTimeAdjustmentCorrectionPreview(req, adminValidation || {}, requestEmployee, payrollState)
  const earliestCarryForwardDate = addDaysToDateString(String(releasedPayrollRecord?.payroll_end || '').slice(0,10), 1)
  const defaultCarryForwardDate = getFirstUncomputedPayrollDate(earliestCarryForwardDate, timeAdjComputedPayrollPeriods)
@@ -39196,13 +39260,15 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', justifyContent:'flex-end' }}>
  <Badge label={typeLabel} color={typeBadgeColor} />
- <Badge label={String(req.status || 'pending').toUpperCase()} color={req.status==='approved'?'blue':req.status==='rejected'?'red':req.status==='voided'?'gray':'orange'} />
+ <Badge label={req.status==='pending'&&productionOT?(needsOwner?'AWAITING OWNER':'AWAITING SUPERVISOR'):String(req.status||'pending').toUpperCase()} color={req.status==='approved'?'blue':req.status==='rejected'?'red':req.status==='voided'?'gray':'orange'} />
  <Badge label={validationBadgeLabel} color={validationBadgeColor} />
  </div>
  </div>
  <p style={cps}>Request Date: <strong>{req.attendance_date}</strong>{resolvedAttendanceDate && resolvedAttendanceDate !== String(req.attendance_date || '').slice(0,10) ? <> | Attendance Source Date: <strong style={{ color:'#2d8a4e' }}>{resolvedAttendanceDate}</strong></> : ''}{!isMealBreakRequest && <> | Saved Request: <strong>{req.minutes} min</strong></>}</p>
  {resolvedFromPreviousDay && <p style={{ margin:'4px 0', padding:'7px 9px', background:'#eef8ff', border:'1px solid #b9ddff', borderRadius:'8px', color:'#1261a0', fontSize:'11px', fontWeight:'800' }}>OVERNIGHT SHIFT MATCH: The attendance record is correctly stored under the previous-day shift-start date, {resolvedAttendanceDate}.</p>}
  <p style={cps}>Employee Reason: <em>"{displayReason || 'No employee reason'}"</em></p>
+ {productionOT&&req.status==='pending'&&<p style={{...cps,color:needsOwner?'#237842':'#b36b00',fontWeight:'800'}}>Approval stage: {needsOwner?'Supervisor verified — waiting for Owner final approval':'Awaiting production supervisor — not payroll eligible'}</p>}
+ {productionOT&&req.supervisor_reviewed_at&&<div style={{padding:'9px 10px',background:'#eefaf1',border:'1px solid #a8d9b3',borderRadius:'8px',fontSize:'11px',margin:'8px 0'}}><strong>Supervisor verified:</strong> {req.supervisor_reviewed_name||'Supervisor'} · {new Date(req.supervisor_reviewed_at).toLocaleString('en-PH')}<p style={{margin:'3px 0 0'}}>{req.supervisor_review_note||''}</p></div>}
  <div style={{ background:'white', border:`1.5px solid ${approvalBlocked?'#ffd0d0':cardColor}`, borderRadius:'12px', padding:'12px', margin:'10px 0' }}>
  {isMealBreakRequest ? (
   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
@@ -39251,7 +39317,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {req.admin_reason && req.status!=='pending' && <p style={cps}>Admin Note: <em>"{req.admin_reason}"</em></p>}
  {(req.status==='pending' || req.status==='approved') && (
  <>
- <label style={lblS}>Admin Response / Reason {isMealBreakRequest && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
+ <label style={lblS}>{supervisorCanReview?'Supervisor Verification / Work Confirmed (minimum 10 characters)':'Admin Response / Reason'} {isMealBreakRequest&&req.status==='pending'?'(required for approval)':req.status==='approved'?'(required for void / undo)':supervisorCanReview?'':'(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  {req.status==='pending' && releasedPayrollCovered && (
   <div style={{ margin:'8px 0', padding:'12px', border:'2px solid #4a90d9', background:'#f5f9ff', borderRadius:'12px' }}>
@@ -39276,9 +39342,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
  {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#1a1a2e', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(26,26,46,0.24)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
- {req.status==='pending' && !releasedPayrollCovered && <button disabled={adminValidation?.loading || approvalBlocked || approvalProcessing} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked || approvalProcessing)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked || approvalProcessing)?'not-allowed':'pointer' }} onClick={async()=>{ if(approvalProcessing) return; setProcessingItems(prev=>({...prev,[approvalActionKey]:true})); try { await approveTimeAdj(req) } catch(error) { console.error('Attendance approval UI recovery:', error); showToast('The attendance request was checked, but the screen could not finish updating. Refresh the list to confirm its saved status.', 'red') } finally { setProcessingItems(prev=>{ const copy={...prev}; delete copy[approvalActionKey]; return copy }) } }}>{approvalProcessing?'Revalidating attendance...':approveButtonLabel}</button>}
- {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='REJECT' }}>REJECT</button>}
- <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL' }}>{req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL'}</button>
+ {supervisorCanReview&&!releasedPayrollCovered&&<button disabled={adminValidation?.loading||approvalBlocked||approvalProcessing} style={{...btnGreen,width:'auto',padding:'8px 14px',marginTop:0}} onClick={async()=>{if(approvalProcessing)return;setProcessingItems(p=>({...p,[approvalActionKey]:true}));try{await forwardProductionOvertimeToOwner(req)}catch(e){showToast('Supervisor review failed: '+(e?.message||e),'red')}finally{setProcessingItems(p=>{const next={...p};delete next[approvalActionKey];return next})}}}>{approvalProcessing?'Verifying...':'VERIFY & FORWARD TO OWNER'}</button>}
+ {req.status==='pending' && !releasedPayrollCovered && finalApproverCanReview && <button disabled={adminValidation?.loading || approvalBlocked || approvalProcessing} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked || approvalProcessing)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked || approvalProcessing)?'not-allowed':'pointer' }} onClick={async()=>{ if(approvalProcessing) return; setProcessingItems(prev=>({...prev,[approvalActionKey]:true})); try { await approveTimeAdj(req) } catch(error) { console.error('Attendance approval UI recovery:', error); showToast('The attendance request was checked, but the screen could not finish updating. Refresh the list to confirm its saved status.', 'red') } finally { setProcessingItems(prev=>{ const copy={...prev}; delete copy[approvalActionKey]; return copy }) } }}>{approvalProcessing?'Revalidating attendance...':productionOT?'OWNER FINAL APPROVE — '+approveButtonLabel:approveButtonLabel}</button>}
+ {req.status==='pending' && productionCanReject && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='REJECT' }}>REJECT</button>}
+ {productionCanVoid && <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL' }}>{req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL'}</button>}
  </div>
  </>
  )}
@@ -50559,39 +50626,25 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
  <p style={{ margin:'0 0 12px', color:timeAdjPreview.canSubmit?'#2d8a4e':'#8b0000', fontSize:'11px', lineHeight:1.5, fontWeight:timeAdjPreview.canSubmit?'700':'600' }}>{timeAdjPreview.message}</p>
- <label style={lblS}>Reason:</label>
- <select
- value={otRequestReasonPreset}
- onChange={e => {
-  const val = e.target.value
-  setOtRequestReasonPreset(val)
-  if (val!== 'Others') setOtRequestReason(val)
-  else setOtRequestReason('')
- }}
- style={inputStyle}
- >
- <option value="">Select a reason</option>
- {otRequestType === 'overtime' ? (
- <>
- <option value="Operational requirements / volume of work">Operational requirements / volume of work</option>
- <option value="Rush order / client deadline">Rush order / client deadline</option>
- <option value="Staff shortage / manpower gap">Staff shortage / manpower gap</option>
- <option value="Management request">Management request</option>
- <option value="Inventory or restocking task">Inventory or restocking task</option>
- </>
- ) : (
- <>
- <option value="Worked continuously due to urgent production volume">Worked continuously due to urgent production volume</option>
- <option value="Supervisor instructed continued work during meal period">Supervisor instructed continued work during meal period</option>
- <option value="Staff shortage / manpower gap prevented meal break">Staff shortage / manpower gap prevented meal break</option>
- <option value="Production or equipment emergency">Production or equipment emergency</option>
- <option value="Prevented loss of perishable products">Prevented loss of perishable products</option>
- </>
- )}
- <option value="Others">Others (please specify)</option>
- </select>
- {otRequestReasonPreset === 'Others' && (
- <textarea placeholder="Please describe the exact work performed and why no meal break was taken..." value={otRequestReason} onChange={e => setOtRequestReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
+ <label style={lblS}>{otRequestType==='overtime'?'Describe the actual work performed during overtime *':'Reason:'}</label>
+ {otRequestType==='overtime'?(
+  <>
+   <textarea value={otRequestReason} onChange={e=>setOtRequestReason(e.target.value)} maxLength={600} placeholder="Specify tasks completed, why they could not be finished in the regular shift, and relevant production or order details." style={{...inputStyle,minHeight:'96px',resize:'vertical'}} />
+   <p style={{fontSize:'11px',color:'#555',margin:'0 0 10px'}}>Minimum 15 characters. Production OT must be reviewed by a supervisor and finally approved by the owner before payroll.</p>
+  </>
+ ):(
+  <>
+   <select value={otRequestReasonPreset} onChange={e=>{const v=e.target.value;setOtRequestReasonPreset(v);setOtRequestReason(v==='Others'?'':v)}} style={inputStyle}>
+    <option value="">Select a reason</option>
+    <option value="Worked continuously due to urgent production volume">Worked continuously due to urgent production volume</option>
+    <option value="Supervisor instructed continued work during meal period">Supervisor instructed continued work during meal period</option>
+    <option value="Staff shortage / manpower gap prevented meal break">Staff shortage / manpower gap prevented meal break</option>
+    <option value="Production or equipment emergency">Production or equipment emergency</option>
+    <option value="Prevented loss of perishable products">Prevented loss of perishable products</option>
+    <option value="Others">Others (please specify)</option>
+   </select>
+   {otRequestReasonPreset==='Others'&&<textarea placeholder="Describe the exact work and why no meal break was taken..." value={otRequestReason} onChange={e=>setOtRequestReason(e.target.value)} style={{...inputStyle,minHeight:'70px',resize:'none'}} />}
+  </>
  )}
  {otRequestType === 'meal_break' && (
   <label style={{ display:'flex', alignItems:'flex-start', gap:'8px', background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', margin:'0 0 10px', cursor:'pointer' }}>
