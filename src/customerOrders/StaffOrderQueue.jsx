@@ -72,6 +72,10 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [queueView,setQueueView] = useState('pending')
   const [voidedStatus,setVoidedStatus] = useState('all')
   const [orderCounts,setOrderCounts] = useState({})
+  const [retailInvoices,setRetailInvoices] = useState([])
+  const [retailInvoiceCount,setRetailInvoiceCount] = useState(0)
+  const [invoiceSearch,setInvoiceSearch] = useState('')
+  const [invoicePreview,setInvoicePreview] = useState(null)
   const [pendingRetailInvoiceRemovals,setPendingRetailInvoiceRemovals] = useState([])
   const [canReviewRetailInvoices,setCanReviewRetailInvoices] = useState(false)
   const [removalNotes,setRemovalNotes] = useState({})
@@ -101,6 +105,8 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const [busy,setBusy] = useState(false)
   const [loading,setLoading] = useState(false)
   const visibleOrders = useMemo(()=>ordersForView(orders,queueView,voidedStatus),[orders,queueView,voidedStatus])
+  const visibleInvoices = useMemo(()=>retailInvoices.filter(invoice =>
+    `${invoice.invoice_number} ${invoice.customer_name}`.toLowerCase().includes(invoiceSearch.trim().toLowerCase())),[retailInvoices,invoiceSearch])
   const selected = useMemo(()=>visibleOrders.find(order=>order.id===selectedId),[visibleOrders,selectedId])
   const selectedDetail = selected && detail?.id===selected.id ? detail : null
   const routeOrderId = selectedDetail?.id
@@ -128,6 +134,9 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       const result = await request('staff-list')
       setOrders(result.orders)
       setOrderCounts(result.orderCounts || {})
+      setRetailInvoices(result.retailInvoices || [])
+      setRetailInvoiceCount(result.retailInvoiceCount || 0)
+      setInvoicePreview(null)
       setPendingRetailInvoiceRemovals(result.pendingRetailInvoiceRemovals || [])
       setCanReviewRetailInvoices(result.canReviewRetailInvoices === true)
       onOrdersChange?.(result.orders)
@@ -151,7 +160,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     if(!session)return undefined
     let active=true
     request('staff-list').then(result=>{
-      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setPendingRetailInvoiceRemovals(result.pendingRetailInvoiceRemovals || []);setCanReviewRetailInvoices(result.canReviewRetailInvoices === true);setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true);onOrdersChange?.(result.orders);setSelectedId(current=>{
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setRetailInvoices(result.retailInvoices || []);setRetailInvoiceCount(result.retailInvoiceCount || 0);setPendingRetailInvoiceRemovals(result.pendingRetailInvoiceRemovals || []);setCanReviewRetailInvoices(result.canReviewRetailInvoices === true);setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true);onOrdersChange?.(result.orders);setSelectedId(current=>{
         const nextOrders = ordersForView(result.orders,'pending')
         return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
       })}
@@ -201,6 +210,9 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
         if (!active) return
         setOrders(result.orders)
         setOrderCounts(result.orderCounts || {})
+        setRetailInvoices(result.retailInvoices || [])
+        setRetailInvoiceCount(result.retailInvoiceCount || 0)
+        setInvoicePreview(current => current && result.retailInvoices?.some(invoice=>invoice.id===current.id) ? current : null)
         setPendingRetailInvoiceRemovals(result.pendingRetailInvoiceRemovals || [])
         onOrdersChange?.(result.orders)
         setOrderingControl(result.orderingControl)
@@ -242,9 +254,9 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     finally{setBusy(false)}
   }
 
-  function printRetailInvoice() {
+  function printRetailInvoice(invoice = detail?.retailInvoice) {
     try {
-      const html = customerRetailInvoiceHtml(detail?.retailInvoice)
+      const html = customerRetailInvoiceHtml(invoice)
       const printWindow = window.open('','_blank','width=760,height=900')
       if (!printWindow) throw new Error('Allow pop-ups to open the retail invoice.')
       printWindow.opener = null
@@ -252,6 +264,18 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       printWindow.document.write(html)
       printWindow.document.close()
     } catch (failure) { setError(failure.message) }
+  }
+
+  async function openRetailInvoice(invoice) {
+    if (busy) return
+    setBusy(true);setError('');setInvoicePreview(null)
+    try {
+      const result = await request('staff-get',{orderId:invoice.order_id})
+      if (result.order?.retailInvoice?.id !== invoice.id || result.order.retailInvoice.status !== 'active')
+        throw new Error('This invoice is no longer active. Refresh the list.')
+      setInvoicePreview(result.order.retailInvoice)
+    } catch (failure) { setError(failure.message) }
+    finally { setBusy(false) }
   }
 
   async function reviewRetailInvoiceRemoval(request,decision) {
@@ -386,6 +410,24 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       </button>}
     </section>}
     {error && <p role="alert" className="staff-error">{error}</p>}
+    <section className="staff-panel staff-retail-invoices" aria-label="Retail customer invoices">
+      <h2>Retail customer invoices <span>({retailInvoiceCount})</span></h2>
+      <p className="staff-hint">Invoices for accepted online orders are kept here, separate from reseller invoices and payment receipts.</p>
+      <label>Find invoice by number or customer
+        <input type="search" value={invoiceSearch} onChange={event=>setInvoiceSearch(event.target.value)} placeholder="Search recent retail invoices" />
+      </label>
+      {retailInvoiceCount > retailInvoices.length && <p className="staff-hint">Showing the latest {retailInvoices.length} invoices.</p>}
+      <div className="staff-retail-invoice-list">
+        {visibleInvoices.length ? visibleInvoices.map(invoice=><div className="staff-retail-invoice-row" key={invoice.id}>
+          <div><strong>{invoice.invoice_number}</strong><br />{invoice.customer_name} · {when(invoice.scheduled_at)} · {money(invoice.total)}</div>
+          <button type="button" disabled={busy} onClick={()=>void openRetailInvoice(invoice)}>View invoice</button>
+        </div>) : <p className="staff-hint">{invoiceSearch?'No matching invoice in the recent list.':'No active retail invoices yet.'}</p>}
+      </div>
+      {invoicePreview && <div className="staff-retail-invoice-preview" role="status">
+        <strong>{invoicePreview.invoice_number}</strong> · {invoicePreview.customer_name} · {money(invoicePreview.total)}
+        <button type="button" onClick={()=>printRetailInvoice(invoicePreview)}>Open or print invoice</button>
+      </div>}
+    </section>
     {canReviewRetailInvoices && pendingRetailInvoiceRemovals.length > 0 && <section className="staff-panel" aria-label="Retail invoice removal approvals">
       <h2>Retail invoices awaiting owner approval ({pendingRetailInvoiceRemovals.length})</h2>
       <p className="staff-hint">Cancelled orders are already excluded from the production forecast. Approve removal to delete a clean unpaid invoice or void one with payment history. The invoice snapshot remains in the audit request.</p>
@@ -421,6 +463,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       <section className="staff-panel staff-detail" aria-label="Selected order">
         {!selectedDetail ? <p>{selected?'Loading order…':'Select an order.'}</p> : <>
           <div className="staff-title"><h2>{selectedDetail.order_code}</h2><span>{selectedDetail.status.replaceAll('_',' ')}</span></div>
+          {selectedDetail.retailInvoice?.status === 'active' && <button type="button" className="staff-invoice-shortcut" onClick={()=>printRetailInvoice(selectedDetail.retailInvoice)}>Open retail invoice {selectedDetail.retailInvoice.invoice_number}</button>}
           {voidEvent && <p className="staff-void-audit" role="status"><strong>{selectedDetail.status==='cancelled'?'Cancelled':'Declined'} by {voidEvent.actor_name || (voidEvent.actor==='customer'?'Customer':'System')}</strong> on {when(voidEvent.created_at)}{voidEvent.note?` · ${voidEvent.note}`:''}. Full activity appears in Order history below.</p>}
           <p><strong>{detail.customer_name}</strong> · {detail.customer_phone}</p>
           {detail.fulfillment_type==='delivery' && <>
@@ -472,7 +515,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           {detail.retailInvoice?.status === 'active' && <section className="staff-payment" aria-label="Retail order invoice">
             <h3>Retail order invoice {detail.retailInvoice.invoice_number}</h3>
             <p className="staff-hint">Issued at retail prices when the verified order was accepted. This invoice is separate from reseller invoices and the payment receipt.</p>
-            <button type="button" onClick={printRetailInvoice}>View or print invoice</button>
+            <button type="button" onClick={()=>printRetailInvoice()}>View or print invoice</button>
           </section>}
           {detail.retailInvoice?.status === 'pending_removal' && <p className="staff-hint" role="status">Retail invoice {detail.retailInvoice.invoice_number} awaits owner approval for removal. This cancelled order is excluded from the forecast.</p>}
           {detail.retailInvoiceRemoval?.status === 'approved' && <p className="staff-hint" role="status">Retail invoice {detail.retailInvoiceRemoval.invoice_number} was {detail.retailInvoiceRemoval.result_action} after owner approval on {when(detail.retailInvoiceRemoval.reviewed_at)}.</p>}

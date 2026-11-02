@@ -32,6 +32,14 @@
 .customer-order-module .staff-ordering-control summary { cursor:pointer; }
 .customer-order-module .staff-ordering-control ol { margin:.5rem 0 0; padding-left:1.4rem; }
 .customer-order-module .staff-ordering-control li { margin:.3rem 0; }
+.customer-order-module .staff-retail-invoices { margin:1rem 0; }
+.customer-order-module .staff-retail-invoices h2 span { font-size:.85em; color:#8d171d; }
+.customer-order-module .staff-retail-invoices label { max-width:420px; }
+.customer-order-module .staff-retail-invoice-list { max-height:240px; overflow:auto; margin-top:.75rem; }
+.customer-order-module .staff-retail-invoice-row { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:.65rem 0; border-top:1px solid #eee0d4; }
+.customer-order-module .staff-retail-invoice-row button { flex:none; }
+.customer-order-module .staff-retail-invoice-preview { display:flex; align-items:center; flex-wrap:wrap; gap:.75rem; margin-top:.75rem; padding:.75rem; border:1px solid #e7c1b8; border-radius:10px; background:#fff3ee; }
+.customer-order-module .staff-detail .staff-invoice-shortcut { margin:.5rem 0 1rem; }
 .customer-order-module .staff-app header { display:flex; justify-content:space-between; gap:1rem; align-items:center; }
 .customer-order-module .staff-app > header { color:#fff; }
 .customer-order-module .staff-app > header h1 { color:#fff !important; }
@@ -76,4 +84,5 @@
   .customer-order-module .staff-layout { grid-template-columns:1fr; }
   .customer-order-module .staff-list { max-height:260px; }
   .customer-order-module .staff-detail { overflow:auto; }
+  .customer-order-module .staff-retail-invoice-row { align-items:stretch; flex-direction:column; }
 }
