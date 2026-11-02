@@ -3,6 +3,7 @@ import {createClient} from '@supabase/supabase-js'
 import {callStaffOrdering} from './staffApi.mjs'
 import {ORDER_QUEUE_VIEWS, ordersForView, finalStatusEvent} from './orderQueueViews.mjs'
 import {downloadRetailInvoiceWord} from './retailInvoiceWord.mjs'
+import {customerRetailInvoiceHtml} from '../../customer-ordering-preview/customer-invoice.mjs'
 
 const url = import.meta.env.VITE_SUPABASE_URL || ''
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
@@ -274,25 +275,26 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       const result = await request('staff-get',{orderId:invoice.order_id})
       if (result.order?.retailInvoice?.id !== invoice.id || result.order.retailInvoice.status !== 'active')
         throw new Error('This invoice is no longer active. Refresh the list.')
-      setInvoicePreview(result.order.retailInvoice)
+      const current = result.order.retailInvoice
+      setInvoicePreview({...current, previewHtml:customerRetailInvoiceHtml(current).replace('</style>', '.actions{display:none!important}</style>')})
     } catch (failure) { setError(failure.message) }
     finally { setBusy(false) }
   }
 
-  async function reviewRetailInvoiceRemoval(request,decision) {
+  async function reviewRetailInvoiceRemoval(removal,decision) {
     if (!canReviewRetailInvoices || busy) return
-    const note = String(removalNotes[request.id] || '').trim()
+    const note = String(removalNotes[removal.id] || '').trim()
     if (decision === 'reject' && note.length < 3) {
       setError('Enter a reason before rejecting the removal request.')
       return
     }
-    if (!window.confirm(`${decision === 'approve' ? 'Approve' : 'Reject'} removal of retail invoice ${request.invoice_number}? A clean unpaid invoice is deleted after approval; one with payment history is voided and retained.`)) return
+    if (!window.confirm(`${decision === 'approve' ? 'Approve' : 'Reject'} removal of retail invoice ${removal.invoice_number}? A clean unpaid invoice is deleted after approval; one with payment history is voided and retained.`)) return
     setBusy(true);setError('')
     try {
-      await request('staff-invoice-review',{requestId:request.id,decision,note})
+      await request('staff-invoice-review',{requestId:removal.id,decision,note})
       await refresh()
-      if (selectedId === request.order_id) {
-        const result = await request('staff-get',{orderId:request.order_id})
+      if (selectedId === removal.order_id) {
+        const result = await request('staff-get',{orderId:removal.order_id})
         setDetail(result.order)
       }
     } catch (failure) { setError(failure.message) }
@@ -425,9 +427,14 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoice)}>PRINT invoice</button>
         </div>) : <p className="staff-hint">{invoiceSearch?'No matching invoice in the recent list.':'No active retail invoices yet.'}</p>}
       </div>
-      {invoicePreview && <div className="staff-retail-invoice-preview" role="status">
-        <strong>{invoicePreview.invoice_number}</strong> · {invoicePreview.customer_name} · {money(invoicePreview.total)}
-        <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoicePreview)}>PRINT invoice</button>
+      {invoicePreview && <div className="staff-invoice-overlay" role="presentation" onClick={()=>setInvoicePreview(null)}>
+        <div className="staff-invoice-dialog" role="dialog" aria-modal="true" aria-label={`Retail invoice ${invoicePreview.invoice_number}`} onClick={event=>event.stopPropagation()}>
+          <div className="staff-invoice-dialog-header"><strong>{invoicePreview.invoice_number}</strong><div>
+            <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoicePreview)}>PRINT invoice</button>
+            <button type="button" onClick={()=>setInvoicePreview(null)}>Close</button>
+          </div></div>
+          <iframe title={`Retail invoice ${invoicePreview.invoice_number}`} srcDoc={invoicePreview.previewHtml} sandbox="" />
+        </div>
       </div>}
     </section>
     {canReviewRetailInvoices && pendingRetailInvoiceRemovals.length > 0 && <section className="staff-panel" aria-label="Retail invoice removal approvals">
