@@ -21,6 +21,11 @@ test('retail order invoice includes prices and agreed delivery details',()=>{
     assert.ok(html.includes(value),value)
   }
   assert.match(html,/separate from reseller invoices/)
+  assert.match(html,/<header>.*<div class="invoice-meta"><strong>Invoice:<\/strong> RI-2026-ABCDEF123456<br><strong>Issued:/)
+  assert.match(html,/<strong>Customer:<\/strong> Sample Customer · <strong>Contact:<\/strong> 09170000000/)
+  assert.match(html,/<strong>Landmark:<\/strong> Near school · <strong>Road distance:<\/strong> 3.25 km/)
+  assert.match(html,/<h2>Items<\/h2>/)
+  assert.doesNotMatch(html,/Items at retail price/)
 })
 
 test('retail invoice rejects cancelled or mismatched snapshots and escapes text',()=>{
