@@ -2,6 +2,7 @@ import {PH_TZ, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, DELIVERY_HOURS, phDate,
 import {PRODUCTS, findProduct, catalogCards} from './catalog.mjs?v=small-box-prices-20261015';
 import {LIVE_ORDERING, liveCall, newOrderCredential, normalizeLiveOrder} from './live-client.mjs';
 import {customerPaymentReceiptHtml, customerRefundReceiptHtml} from './customer-receipt.mjs';
+import {customerRetailInvoiceHtml} from './customer-invoice.mjs';
 import {customerOrderAmounts, customerStatusLabel} from './customer-order-display.mjs';
 
 const KEY = 'romas-public-ordering-preview-v1';
@@ -38,6 +39,10 @@ let liveDeliveryCoverage = COVERAGE;
 let liveAddressSearchAvailable = false;
 let liveConfigError = '';
 let liveSubmitting = false;
+let turnstileSiteKey = '';
+let turnstileWidgetId = null;
+let turnstileToken = '';
+let turnstileScriptPromise;
 let liveReceipts = [];
 if(LIVE_ORDERING){
   try{const stored=JSON.parse(localStorage.getItem('romas-customer-order-receipts-v1')||'[]');liveReceipts=Array.isArray(stored)?stored:[];}
@@ -113,7 +118,7 @@ function renderCheckout(){
   const packaging = `<div class="panel"><h3>3. Packaging</h3>${packagingPicker()}</div>`;
   const details = `<div class="panel"><h3>4. Your details</h3><div class="field-grid">${field('Full name','name','Your name',true)}${field(LIVE_ORDERING?'Mobile number we can call':'Mobile number','phone','09XXXXXXXXX',true,'tel')}</div><div class="field"><label for="notes">Notes for the team</label><textarea id="notes" name="notes" data-field="notes" placeholder="Any helpful details?">${esc(draft.notes)}</textarea></div><p class="hint">Payment is due when you receive your order. ${LIVE_ORDERING?'Roma’s team will call this number to confirm your request before accepting it.':'The team will confirm availability and your requested time.'}</p></div>`;
   const summary = PRODUCTS.filter(p=>cart[p.id]>0).map(p=>`<div class="summary-line"><span>${esc(p.name)} × ${cart[p.id]} ${esc(p.unitLabel)}</span><strong>${money(p.price*cart[p.id])}</strong></div>`).join('');
-  return `<main class="shell"><button class="back" data-nav="shop">← Back to menu</button><div class="page-head"><h1>Make it your moment</h1><p>Choose how and when to enjoy your donuts.</p></div><div class="checkout-layout"><div><form id="order-form">${fulfillment}${schedule}${deliverySection()}${packaging}${details}${liveConfigError?`<div class="error" role="alert">${esc(liveConfigError)}</div>`:''}${error?`<div class="error" role="alert">${esc(error)}</div>`:''}<button class="btn btn-primary wide" type="submit" ${LIVE_ORDERING&&(liveSubmitting||!liveOrderingEnabled||!livePickupLocations.length)?'disabled':''}>${liveSubmitting?'Sending…':'Send order request →'}</button></form></div><aside class="cart-panel"><h3>Order summary</h3>${summary}<div class="money-row"><span>Subtotal</span><strong>${money(subtotal())}</strong></div><div class="money-row"><span>Packaging</span><strong>${hasLoosePieces()?draft.packaging==='box'?'Box':'Paper bag':'Box sets'}</strong></div><div class="money-row"><span>${draft.type==='delivery'?'Delivery fee':'Delivery fee'}</span><strong>${draft.type==='pickup'?money(0):LIVE_ORDERING?'Staff to confirm':draft.quote?money(draft.quote.fee):'Set pin'}</strong></div><div class="money-row total"><span>${draft.type==='delivery'&&LIVE_ORDERING?'Total after quote':draft.type==='delivery'?'Estimated total':LIVE_ORDERING?'Order total':'Preview total'}</span><span>${draft.type==='delivery'&&(LIVE_ORDERING||!draft.quote)?'—':money(quoteTotal())}</span></div><p class="hint">${LIVE_ORDERING?(draft.type==='delivery'?'This is a delivery request. Staff will confirm service area, road distance, fee, and requested time with you before accepting.':'Pickup availability and prices are checked again when you submit. Staff will confirm your order.'):`The current preview rate is ${money(db.settings.minimumFee)} for the first ${db.settings.includedKm} km plus ${money(db.settings.perKm)} per additional started km. The displayed fee uses approximate branch pins and straight-line distance; staff must confirm the road route and final charge. This preview does not create a live order.`}</p></aside></div></main>`;
+  return `<main class="shell"><button class="back" data-nav="shop">← Back to menu</button><div class="page-head"><h1>Make it your moment</h1><p>Choose how and when to enjoy your donuts.</p></div><div class="checkout-layout"><div><form id="order-form">${fulfillment}${schedule}${deliverySection()}${packaging}${details}${LIVE_ORDERING&&turnstileSiteKey?'<div class="panel"><h3>Security check</h3><div id="order-turnstile"></div><p class="hint">This quick check helps protect Roma’s from fake requests.</p></div>':''}${liveConfigError?`<div class="error" role="alert">${esc(liveConfigError)}</div>`:''}${error?`<div class="error" role="alert">${esc(error)}</div>`:''}<button class="btn btn-primary wide" type="submit" ${LIVE_ORDERING&&(liveSubmitting||!liveOrderingEnabled||!livePickupLocations.length)?'disabled':''}>${liveSubmitting?'Sending…':'Send order request →'}</button></form></div><aside class="cart-panel"><h3>Order summary</h3>${summary}<div class="money-row"><span>Subtotal</span><strong>${money(subtotal())}</strong></div><div class="money-row"><span>Packaging</span><strong>${hasLoosePieces()?draft.packaging==='box'?'Box':'Paper bag':'Box sets'}</strong></div><div class="money-row"><span>${draft.type==='delivery'?'Delivery fee':'Delivery fee'}</span><strong>${draft.type==='pickup'?money(0):LIVE_ORDERING?'Staff to confirm':draft.quote?money(draft.quote.fee):'Set pin'}</strong></div><div class="money-row total"><span>${draft.type==='delivery'&&LIVE_ORDERING?'Total after quote':draft.type==='delivery'?'Estimated total':LIVE_ORDERING?'Order total':'Preview total'}</span><span>${draft.type==='delivery'&&(LIVE_ORDERING||!draft.quote)?'—':money(quoteTotal())}</span></div><p class="hint">${LIVE_ORDERING?(draft.type==='delivery'?'This is a delivery request. Staff will confirm service area, road distance, fee, and requested time with you before accepting.':'Pickup availability and prices are checked again when you submit. Staff will confirm your order.'):`The current preview rate is ${money(db.settings.minimumFee)} for the first ${db.settings.includedKm} km plus ${money(db.settings.perKm)} per additional started km. The displayed fee uses approximate branch pins and straight-line distance; staff must confirm the road route and final charge. This preview does not create a live order.`}</p></aside></div></main>`;
 }
 function orderTile(order){return `<button class="order-tile ${selectedId===order.id?'active':''}" data-select="${esc(order.id)}"><strong>${esc(order.orderCode||order.id)} ${order.sample?'<span class="pill">SAMPLE</span>':''}</strong><small>${formatDate(order.date)} · ${formatTime(order.time)} · ${esc(order.type)}</small><br><span class="status ${order.status}">${esc(customerStatusLabel(order.status))}</span></button>`;}
 function chatBox(order,from){return `<div class="chat"><div class="chat-messages">${order.messages.length?order.messages.map(m=>`<div class="bubble ${m.from===from?'me':''}"><strong>${m.from==='staff'?'Roma’s team':'Customer'}</strong><div>${esc(m.text)}</div><small>${new Intl.DateTimeFormat('en-PH',{timeZone:PH_TZ,hour:'numeric',minute:'2-digit',month:'short',day:'numeric'}).format(new Date(m.at))}</small></div>`).join(''):'<div class="hint">Start a conversation about this order.</div>'}</div><form class="chat-form" data-chat="${esc(order.id)}" data-from="${from}"><input name="message" maxlength="500" placeholder="Write a message about this order…" required aria-label="Chat message"><button class="btn btn-primary" type="submit">Send</button></form></div>`;}
@@ -134,6 +139,9 @@ function orderDetail(order,from){
     ${from==='customer'?`<p class="footnote">${LIVE_ORDERING?'Keep your order access link private. Anyone with it can view this order.':'Preview only: all orders and messages are stored in this browser. Customer identity verification is required before public launch.'}</p>`:''}</div>`;
 }
 function customerOrderDetail(order){
+  const invoice=LIVE_ORDERING && order.retailInvoice?.status==='active'
+    ? `<div class="receipt-action"><strong>Retail order invoice ${esc(order.retailInvoice.invoice_number)}</strong><p class="hint">Your confirmed items, retail prices, delivery fee, and fulfillment details are recorded here. Your payment receipt is separate.</p><button class="btn btn-primary" data-print-invoice="${esc(order.id)}">Print retail order invoice</button></div>`
+    : '';
   const payment=LIVE_ORDERING ? order.paymentStatus==='refunded'
     ? order.receipt?.refund?.id && order.refundedAt
       ? `<div class="receipt-action"><strong>Full refund recorded</strong><p class="hint">Recorded ${esc(new Intl.DateTimeFormat('en-PH',{timeZone:PH_TZ,dateStyle:'medium',timeStyle:'short'}).format(new Date(order.refundedAt)))} via ${esc(order.receipt.refund.paymentMethod)}. The original payment and reversal are kept separately.</p><button class="btn btn-primary" data-print-receipt="${esc(order.id)}">Print refund confirmation</button></div>`
@@ -146,12 +154,47 @@ function customerOrderDetail(order){
       ? '<div class="receipt-action"><strong>No payment due</strong><p class="hint">This request is closed and no payment was recorded.</p></div>'
       : '<div class="receipt-action"><strong>Payment after confirmation</strong><p class="hint">Roma’s team will confirm your order. A payment receipt becomes available after full payment is recorded.</p></div>' : '';
   return orderDetail(order,'customer')
-    .replace('<h3 style="margin-top:24px">Order chat</h3>', `${payment}<h3 style="margin-top:24px">Order chat</h3>`);
+    .replace('<h3 style="margin-top:24px">Order chat</h3>', `${invoice}${payment}<h3 style="margin-top:24px">Order chat</h3>`);
 }
 function renderOrders(){const orders=[...db.orders].reverse();const selected=db.orders.find(o=>o.id===selectedId)||orders[0];return `<main class="shell"><div class="page-head"><h1>My orders</h1><p>Follow your request and talk with Roma's team.</p></div><div class="order-grid"><div class="order-list">${orders.length?orders.map(orderTile).join(''):'<div class="empty">No orders yet. Your first sweet moment is waiting.</div>'}<button class="btn btn-primary" data-nav="shop">+ Start a new order</button></div>${selected?customerOrderDetail(selected):''}</div></main>`;}
 function renderStaff(){const counts={pending:db.orders.filter(o=>o.status==='pending_confirmation').length,scheduled:db.orders.filter(o=>['accepted','preparing'].includes(o.status)).length,activeChat:db.orders.filter(o=>o.messages.at(-1)?.from==='customer').length,today:db.orders.filter(o=>o.date===phDate()).length};const selected=db.orders.find(o=>o.id===selectedId)||db.orders.at(-1);return `<main class="shell"><div class="page-head"><span class="pill">STAFF PREVIEW</span><h1>Order command center</h1><p>Review requests, manage preparation and reply to customers. This dashboard is a browser-only demo.</p></div><div class="metric-grid"><div class="metric"><strong>${counts.pending}</strong><span>Need confirmation</span></div><div class="metric"><strong>${counts.scheduled}</strong><span>Accepted / preparing</span></div><div class="metric"><strong>${counts.today}</strong><span>Scheduled today</span></div><div class="metric"><strong>${counts.activeChat}</strong><span>Customer replies to review</span></div></div><div class="staff-layout"><div class="staff-sidebar"><button data-staff="orders" class="${staffView==='orders'?'active':''}">▤ &nbsp; Order queue</button><button data-staff="selected" class="${staffView==='selected'?'active':''}">◉ &nbsp; Selected order</button><button data-staff="settings" class="${staffView==='settings'?'active':''}">⚙ &nbsp; Delivery settings</button><div class="quote-box">Live integration will place accepted customer orders into production planning and completed paid orders into sales once. It is not connected in this preview.</div></div><div>${staffView==='orders'?`<div class="panel"><h3>Customer requests</h3><div class="table-wrap"><table class="orders-table"><thead><tr><th>Order</th><th>Customer</th><th>Date & time</th><th>Branch</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${[...db.orders].reverse().map(o=>`<tr><td><strong>${esc(o.id)}</strong>${o.sample?'<br><small>Sample</small>':''}</td><td>${esc(o.name)}</td><td>${formatDate(o.date)}<br>${formatTime(o.time)}</td><td>${esc(o.branch)}</td><td>${money(o.total)}</td><td><span class="status ${o.status}">${esc(o.status.replaceAll('_',' '))}</span></td><td><button data-open-staff="${esc(o.id)}">Open →</button></td></tr>`).join('')}</tbody></table></div></div>`:staffView==='settings'?settingsPanel():selected?`<div class="panel"><div class="field"><label for="status-update">Update status</label><select id="status-update" data-status="${esc(selected.id)}">${['pending_confirmation','accepted','preparing','ready','out_for_delivery','completed','declined','cancelled'].map(s=>`<option value="${s}" ${selected.status===s?'selected':''}>${s.replaceAll('_',' ')}</option>`).join('')}</select></div><p class="hint">Status changes in this preview are stored only in your browser.</p></div>${orderDetail(selected,'staff')}`:'<div class="empty">Choose an order.</div>'}</div></div></main>`;}
 function settingsPanel(){const s=db.settings;return `<div class="panel"><h3>Delivery fee preview</h3><p class="hint">The default approved rate is ₱80 for the first 3 km plus ₱10 per additional started km. The values below can be adjusted for this local preview. Exact branch pins and road routing are still needed before live use.</p><form id="settings-form"><div class="field-grid"><div class="field"><label>Minimum fee (₱)</label><input type="number" name="minimumFee" min="0" step="0.01" value="${s.minimumFee}" required></div><div class="field"><label>Additional per started km (₱)</label><input type="number" name="perKm" min="0" step="0.01" value="${s.perKm}" required></div><div class="field"><label>Included kilometers</label><input type="number" name="includedKm" min="0" step="0.1" value="${s.includedKm}" required></div></div><h3>Branch pins</h3><p class="hint">Current positions are approximate municipality centers, not real shop coordinates.</p>${BRANCH_NAMES.map(name=>`<div class="settings-branch"><strong>${name}</strong><input type="number" step="any" name="lat:${name}" aria-label="${name} latitude" value="${s.branches[name].lat}"><input type="number" step="any" name="lng:${name}" aria-label="${name} longitude" value="${s.branches[name].lng}"></div>`).join('')}<button class="btn btn-primary" type="submit">Save preview settings</button></form></div>`;}
-function render(){ if(map){map.remove();map=null;marker=null;}app.innerHTML=renderHeader()+(page==='shop'?renderShop():page==='checkout'?renderCheckout():page==='orders'?renderOrders():renderStaff())+`<footer class="footer"><strong>Roma's Donuts</strong> · ${LIVE_ORDERING?'Orders are submitted for staff confirmation':'Customer ordering concept · Local interactive preview, not a live ordering service'}</footer>`;if(page==='checkout'&&draft.type==='delivery') setTimeout(initMap,0);}
+function loadTurnstile(){
+  if(window.turnstile)return Promise.resolve(window.turnstile);
+  if(!turnstileScriptPromise)turnstileScriptPromise=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');
+    script.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async=true;
+    script.onload=()=>window.turnstile
+      ? window.turnstile.ready(()=>resolve(window.turnstile))
+      : reject(new Error('Security check could not initialize.'));
+    script.onerror=()=>reject(new Error('Security check could not load. Please refresh and try again.'));
+    document.head.appendChild(script);
+  });
+  return turnstileScriptPromise;
+}
+async function mountTurnstile(){
+  const container=document.getElementById('order-turnstile');
+  if(!container||!turnstileSiteKey)return;
+  try{
+    const turnstile=await loadTurnstile();
+    if(!container.isConnected||page!=='checkout')return;
+    turnstileWidgetId=turnstile.render(container,{
+      sitekey:turnstileSiteKey,action:'customer_order',appearance:'interaction-only',
+      callback:token=>{turnstileToken=token;},
+      'expired-callback':()=>{turnstileToken='';},
+      'error-callback':()=>{turnstileToken='';},
+    });
+  }catch{if(container.isConnected)container.textContent='Security check could not load. Please refresh and try again.';}
+}
+function render(){
+  if(map){map.remove();map=null;marker=null;}
+  if(turnstileWidgetId!==null&&window.turnstile){try{window.turnstile.remove(turnstileWidgetId)}catch{/* The old widget may already have been removed. */}}
+  turnstileWidgetId=null;turnstileToken='';
+  app.innerHTML=renderHeader()+(page==='shop'?renderShop():page==='checkout'?renderCheckout():page==='orders'?renderOrders():renderStaff())+`<footer class="footer"><strong>Roma's Donuts</strong> · ${LIVE_ORDERING?'Orders are submitted for staff confirmation':'Customer ordering concept · Local interactive preview, not a live ordering service'}</footer>`;
+  if(page==='checkout'&&draft.type==='delivery')setTimeout(initMap,0);
+  if(page==='checkout'&&turnstileSiteKey)void mountTurnstile();
+}
 
 function initMap(){const container=document.getElementById('location-map');if(!container||!window.L)return;const {L}=window;const center=draft.pin||{lat:DEMO_CENTERS[draft.town][0],lng:DEMO_CENTERS[draft.town][1]};container.innerHTML='';map=L.map(container).setView([center.lat,center.lng],draft.pin?14:12);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);if(draft.pin){marker=L.marker([draft.pin.lat,draft.pin.lng],{draggable:true}).addTo(map);marker.on('dragend',()=>setPin(marker.getLatLng()));}map.on('click',event=>setPin(event.latlng));setTimeout(()=>map?.invalidateSize(),150);}
 function setPin(point,{lookup=true}={}){const lat=Number(point.lat),lng=Number(point.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng)||Math.abs(lat)>90||Math.abs(lng)>180)return;draft.pin={lat,lng};draft.lat=lat.toFixed(6);draft.lng=lng.toFixed(6);draft.quote=null;if(!LIVE_ORDERING)draft.branch=suggestedBranch(draft.pin);const latInput=document.querySelector('[name="lat"]'),lngInput=document.querySelector('[name="lng"]');if(latInput)latInput.value=draft.lat;if(lngInput)lngInput.value=draft.lng;if(LIVE_ORDERING){if(lookup&&liveAddressSearchAvailable&&!draft.manualAddress){draft.address='';void lookupPinAddress(lat,lng);}render();}else calculateQuote();}
@@ -186,11 +229,12 @@ async function refreshLiveConfig(){
     liveOrderingEnabled=result.orderingEnabled===true;
     liveDeliveryAvailable=result.deliveryAvailable===true;
     liveAddressSearchAvailable=result.addressSearchAvailable===true;
+    turnstileSiteKey=typeof result.turnstileSiteKey==='string'?result.turnstileSiteKey:'';
     liveDeliveryCoverage=Array.isArray(result.deliveryCoverage)&&result.deliveryCoverage.length?result.deliveryCoverage:COVERAGE;
     liveConfigError=liveOrderingEnabled?'':'Customer ordering is not open yet.';
     if(draft.type==='delivery'&&!liveDeliveryAvailable)draft.type='pickup';
     draft.branch=livePickupLocations.some(location=>location.name===draft.branch)?draft.branch:livePickupLocations[0]?.name||'';
-  }catch(failure){liveConfigError=failure.message;livePickupLocations=[];liveOrderingEnabled=false;liveDeliveryAvailable=false;liveAddressSearchAvailable=false;draft.branch='';draft.type='pickup';}
+  }catch(failure){liveConfigError=failure.message;livePickupLocations=[];liveOrderingEnabled=false;liveDeliveryAvailable=false;liveAddressSearchAvailable=false;turnstileSiteKey='';draft.branch='';draft.type='pickup';}
   render();
 }
 async function refreshLiveOrders(){
@@ -216,6 +260,8 @@ async function submitLiveOrder(form){
   if(!availableSlots(String(form.get('date')||''),new Date(),draft.type==='delivery'?DELIVERY_HOURS:selectedHours||null).includes(String(form.get('time')||''))){
     error='Order at least one day ahead. Next-day requests close at 3:00 PM Philippine time; choose an available date and time.';render();return;
   }
+  const securityToken=turnstileSiteKey ? turnstileToken : '';
+  if(turnstileSiteKey&&!securityToken){error='Complete the security check, then send your request.';render();return;}
   liveSubmitting=true;error='';render();
   const pendingKey='romas-pending-order-credential-v1';
   let credential;
@@ -226,7 +272,7 @@ async function submitLiveOrder(form){
   }
   try{
     const result=await liveCall('submit',{
-      ...credential,fulfillmentType:draft.type,
+      ...credential,fulfillmentType:draft.type,turnstileToken:securityToken,
       ...(draft.type==='pickup'?{pickupLocation:draft.branch}:{municipality:draft.town,
         address:[String(form.get('address')||'').trim(),String(form.get('addressDetails')||'').trim()].filter(Boolean).join(', ').slice(0,300),landmark:String(form.get('landmark')||''),
         latitude:draft.pin.lat,longitude:draft.pin.lng}),
@@ -263,6 +309,18 @@ function updateLiveTotals(){document.querySelectorAll('[data-subtotal]').forEach
 app.addEventListener('click',event=>{const target=event.target.closest('button');if(!target)return;if(target.dataset.addressIndex!==undefined){const item=addressMatches[Number(target.dataset.addressIndex)];if(item){++addressRequestId;draft.address=item.label;draft.addressQuery=item.label;addressMatches=[];setPin({lat:item.latitude,lng:item.longitude},{lookup:false});}return;}if(target.dataset.boxPhoto){boxPreviews[target.dataset.boxGroup]=target.dataset.boxPhoto;render();return;}if(target.dataset.nav){if(LIVE_ORDERING&&target.dataset.nav==='staff'){window.location.assign('/public-ordering-staff.html');return;}nav(target.dataset.nav);return;}if(target.dataset.action==='scroll-menu'){document.getElementById('menu')?.scrollIntoView({behavior:'smooth'});return;}if(target.dataset.catalog){catalogMode=target.dataset.catalog;searchTerm='';render();document.getElementById('menu')?.scrollIntoView();return;}if(target.dataset.packaging){draft.packaging=target.dataset.packaging;render();return;}if(target.dataset.action==='add'||target.dataset.action==='dec'){const id=target.dataset.id;const product=findProduct(id);if(!product)return;if(product.type==='box')boxPreviews[product.groupId]=id;cart[id]=Math.min(999,Math.max(0,(cart[id]||0)+(target.dataset.action==='add'?1:-1)));render();return;}if(target.dataset.type){draft.type=target.dataset.type;if(draft.type==='delivery'&&!BRANCH_NAMES.includes(draft.branch))draft.branch='Dagupan City';draft.quote=null;render();return;}if(target.dataset.select){selectedId=target.dataset.select;render();return;}if(target.dataset.staff){staffView=target.dataset.staff;render();return;}if(target.dataset.openStaff){selectedId=target.dataset.openStaff;staffView='selected';render();return;}if(target.dataset.action==='locate'){if(!navigator.geolocation){notify('Location is unavailable in this browser');return;}navigator.geolocation.getCurrentPosition(pos=>{setPin({lat:pos.coords.latitude,lng:pos.coords.longitude});notify('Pin placed at your current location');},()=>notify('Location permission was not granted'),{enableHighAccuracy:true,timeout:10000});}});
 app.addEventListener('click',event=>{if(event.target.closest('[data-action="manual-address"]')){draft.manualAddress=!draft.manualAddress;draft.address='';render();}});
 app.addEventListener('click',event=>{
+  const invoiceButton=event.target.closest('[data-print-invoice]');
+  if(invoiceButton&&LIVE_ORDERING){
+    const order=db.orders.find(item=>item.id===invoiceButton.dataset.printInvoice);
+    try{
+      const html=customerRetailInvoiceHtml(order?.retailInvoice);
+      const printWindow=window.open('','_blank','width=760,height=900');
+      if(!printWindow)throw new Error('Allow pop-ups to open your invoice.');
+      printWindow.opener=null;
+      printWindow.document.open();printWindow.document.write(html);printWindow.document.close();
+    }catch(failure){notify(failure.message);}
+    return;
+  }
   const button=event.target.closest('[data-print-receipt]');
   if(!button||!LIVE_ORDERING)return;
   const order=db.orders.find(item=>item.id===button.dataset.printReceipt);

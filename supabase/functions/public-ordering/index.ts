@@ -2,6 +2,7 @@ import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
+import {verifyTurnstileToken} from './turnstile.mjs'
 import {canPerformStaffAction} from './staff-access.mjs'
 import {addressSuggestions, reverseAddress, roadRoute, validDeliveryPoint} from './delivery-routing.mjs'
 import {
@@ -13,6 +14,8 @@ const SUBMISSIONS_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_
 const DELIVERY_ALLOWED_BY_SERVER = Deno.env.get('PUBLIC_ORDERING_DELIVERY_ENABLED') === 'true'
 const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,delivery_origin_location,delivery_quoted_at,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
+const TURNSTILE_SITE_KEY = Deno.env.get('PUBLIC_ORDERING_TURNSTILE_SITE_KEY') || ''
+const TURNSTILE_SECRET_KEY = Deno.env.get('PUBLIC_ORDERING_TURNSTILE_SECRET_KEY') || ''
 
 type Client = ReturnType<typeof createClient<any>>
 type Body = Record<string, unknown>
@@ -48,12 +51,13 @@ async function staffIdentity(admin: Client, request: Request) {
   const {data: userResult, error: userError} = await admin.auth.getUser(token)
   if (userError || !userResult.user) return null
   const {data: staff, error} = await admin.from('admin_users')
-    .select('id,full_name').eq('auth_user_id', userResult.user.id).eq('is_active', true).maybeSingle()
+    .select('id,full_name,role,extra_roles').eq('auth_user_id', userResult.user.id).eq('is_active', true).maybeSingle()
   if (error || !staff) return null
   const {data: permission, error: permissionError} = await admin.from('customer_order_staff_permissions')
     .select('access_level').eq('admin_user_id', staff.id).maybeSingle()
   if (permissionError) return null
-  return {...staff, accessLevel:permission?.access_level || 'view'}
+  const roles = [staff.role,...String(staff.extra_roles || '').split(',')].map(value=>value.trim().toLowerCase())
+  return {...staff, accessLevel:permission?.access_level || 'view', isOwner:roles.includes('owner')}
 }
 
 async function orderingControl(admin: Client) {
@@ -68,12 +72,14 @@ async function orderingControl(admin: Client) {
 }
 
 async function orderDetail(admin: Client, orderId: string, includeAudit = false) {
-  const [{data: order, error: orderError}, {data: items, error: itemError}, {data: messages, error: messageError}] = await Promise.all([
+  const [{data: order, error: orderError}, {data: items, error: itemError}, {data: messages, error: messageError},
+    {data: invoice, error: invoiceError}] = await Promise.all([
     admin.from('customer_orders').select(ORDER_FIELDS).eq('id', orderId).single(),
     admin.from('customer_order_items').select('product_id,product_name,quantity,unit_label,pieces_per_unit,unit_price,line_total').eq('order_id', orderId).order('id'),
     admin.from('customer_order_messages').select('id,sender,body,created_at').eq('order_id', orderId).order('created_at'),
+    admin.from('customer_order_retail_invoices').select('*').eq('order_id',orderId).maybeSingle(),
   ])
-  if (orderError || itemError || messageError || !order) return null
+  if (orderError || itemError || messageError || invoiceError || !order) return null
   let receipt = null
   if (order.payment_status === 'paid' || order.payment_status === 'refunded') {
     const {data: sale, error: saleError} = await admin.from('daily_sales_online_payments')
@@ -95,11 +101,15 @@ async function orderDetail(admin: Client, orderId: string, includeAudit = false)
       }
     }
   }
-  if (!includeAudit) return {...order, items: items || [], messages: messages || [], receipt}
-  const {data: events, error: eventError} = await admin.from('customer_order_events')
-    .select('id,actor,actor_admin_user_id,old_status,new_status,note,created_at')
-    .eq('order_id', orderId).order('created_at').order('id')
-  if (eventError) return null
+  if (!includeAudit) return {...order, items: items || [], messages: messages || [], receipt, retailInvoice:invoice}
+  const [{data: events, error: eventError},{data: removal, error: removalError}] = await Promise.all([
+    admin.from('customer_order_events')
+      .select('id,actor,actor_admin_user_id,old_status,new_status,note,created_at')
+      .eq('order_id', orderId).order('created_at').order('id'),
+    admin.from('customer_order_retail_invoice_removals').select('id,status,invoice_number,requested_at,reviewed_at,result_action,review_note')
+      .eq('order_id',orderId).maybeSingle(),
+  ])
+  if (eventError || removalError) return null
   const actorIds = [...new Set((events || []).map(event => event.actor_admin_user_id).filter(Boolean))]
   let actorNames = new Map<string,string>()
   if (actorIds.length) {
@@ -108,7 +118,7 @@ async function orderDetail(admin: Client, orderId: string, includeAudit = false)
     if (actorError) return null
     actorNames = new Map((actors || []).map(actor => [actor.id, actor.full_name]))
   }
-  return {...order, items: items || [], messages: messages || [], receipt,
+  return {...order, items: items || [], messages: messages || [], receipt, retailInvoice:invoice, retailInvoiceRemoval:removal,
     events:(events || []).map(event => ({...event,
       actor_name:event.actor_admin_user_id ? actorNames.get(event.actor_admin_user_id) || 'Former staff member' : null}))}
 }
@@ -129,6 +139,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   const action = cleanText(body.action, 40)
 
   if (action === 'config') {
+    if (Boolean(TURNSTILE_SITE_KEY) !== Boolean(TURNSTILE_SECRET_KEY))
+      return reply(503, {ok:false, message:'Checkout verification is temporarily unavailable.'})
     const [{data, error}, control] = await Promise.all([
       admin.from('customer_pickup_locations').select('name,address').eq('is_active', true).order('name'),
       orderingControl(admin),
@@ -141,7 +153,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       deliveryAvailable:SUBMISSIONS_ALLOWED_BY_SERVER && DELIVERY_ALLOWED_BY_SERVER && pickupLocations.length > 0,
       addressSearchAvailable:Boolean(Deno.env.get('OPENROUTESERVICE_API_KEY')),
       deliveryCoverage:DELIVERY_COVERAGE,
-      orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call'})
+      orderingEnabled:control.enabled, phoneVerificationMethod:'staff_call',
+      turnstileSiteKey:TURNSTILE_SITE_KEY})
   }
 
   if (action === 'address-suggest' || action === 'address-reverse') {
@@ -171,6 +184,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
   if (action === 'submit') {
     const control = await orderingControl(admin)
     if (!control?.enabled) return reply(503, {ok:false, message:'Customer ordering is not open yet.'})
+    if (Boolean(TURNSTILE_SITE_KEY) !== Boolean(TURNSTILE_SECRET_KEY))
+      return reply(503, {ok:false, message:'Checkout verification is temporarily unavailable.'})
     const requestId = body.requestId
     const accessToken = body.accessToken
     if (!validRequestId(requestId) || !validAccessToken(accessToken)) return reply(400, {ok:false, message:'Invalid order request.'})
@@ -185,9 +200,26 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
     if (!isOrderDateAllowed(body.date)) return reply(422, {ok:false, message:'Same-day orders are unavailable. Order by 3:00 PM Philippine time for next-day pickup, or choose a later date.'})
-    const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
-    if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
-    if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})
+    const forwardedIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || ''
+    const ipLimit = forwardedIp
+      ? await consumeRateLimit(admin, rateSecret, 'submit-ip-hour', forwardedIp, 30, 3600) : 'allowed'
+    if (ipLimit === 'unavailable')
+      return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
+    if (ipLimit === 'limited')
+      return reply(429, {ok:false, message:'Too many order requests. Please call Roma’s Donuts if you need help.'})
+    if (TURNSTILE_SECRET_KEY) {
+      const hostname = (() => {try {return new URL(origin || '').hostname} catch {return ''}})()
+      if (!await verifyTurnstileToken(body.turnstileToken, TURNSTILE_SECRET_KEY, hostname))
+        return reply(422, {ok:false, message:'Security check expired or could not be verified. Please try again.'})
+    }
+    const phoneKey = normalizePhoneForLimit(phone)
+    const phoneHourly = await consumeRateLimit(admin, rateSecret, 'submit-phone-hour', phoneKey, 4, 3600)
+    const phoneDaily = phoneHourly === 'allowed'
+      ? await consumeRateLimit(admin, rateSecret, 'submit-phone-day', phoneKey, 10, 86400) : phoneHourly
+    if (phoneHourly === 'unavailable' || phoneDaily === 'unavailable')
+      return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
+    if (phoneHourly === 'limited' || phoneDaily === 'limited')
+      return reply(429, {ok:false, message:'Too many order requests. Please call Roma’s Donuts if you need help.'})
     let scheduledAt: string | null = null
     let details: Record<string, unknown> = {}
     if (fulfillmentType === 'pickup') {
@@ -252,7 +284,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set','staff-delivery-route','staff-delivery-quote'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast','staff-ordering-set','staff-delivery-route','staff-delivery-quote','staff-invoice-review'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
   if (!canPerformStaffAction(staff.accessLevel, action)) {
@@ -283,8 +315,9 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     }
     const nextDate = new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0,10)
     const {data:orders, error:orderError} = await admin.from('customer_orders')
-      .select('id,order_code,status,scheduled_at')
+      .select('id,order_code,status,scheduled_at,phone_verified_at')
       .in('status', ['accepted','preparing','ready','out_for_delivery','completed'])
+      .not('phone_verified_at', 'is', null)
       .gte('scheduled_at', `${date}T00:00:00+08:00`)
       .lt('scheduled_at', `${nextDate}T00:00:00+08:00`)
       .order('id').limit(501)
@@ -308,7 +341,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       cancelled:['cancelled'],
       declined:['declined'],
     }
-    const [groupResults, control, {data:events, error:eventsError}, {data:origins, error:originsError}] = await Promise.all([
+    const [groupResults, control, {data:events, error:eventsError}, {data:origins, error:originsError},
+      {data:invoiceRemovals,error:removalsError}] = await Promise.all([
       Promise.all(Object.entries(groups).map(async ([group,statuses]) => ({group,
         result:await admin.from('customer_orders').select(ORDER_FIELDS,{count:'exact'})
           .in('status',statuses).order('created_at',{ascending:false}).limit(100),
@@ -317,19 +351,42 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       admin.from('customer_ordering_control_events')
         .select('id,actor_name,old_enabled,new_enabled,created_at').order('id', {ascending:false}).limit(10),
       admin.from('customer_pickup_locations').select('name,address').eq('is_active',true).order('name'),
+      staff.isOwner && staff.accessLevel === 'full'
+        ? admin.from('customer_order_retail_invoice_removals')
+          .select('id,order_id,invoice_number,requested_at,invoice_snapshot')
+          .eq('status','pending').order('requested_at',{ascending:false}).limit(100)
+        : Promise.resolve({data:[],error:null}),
     ])
     const unavailable = groupResults.some(({result}) => result.error)
     const orderCounts = Object.fromEntries(groupResults.map(({group,result}) => [group,result.count || 0]))
     orderCounts.voided = orderCounts.cancelled + orderCounts.declined
     const orders = groupResults.flatMap(({result}) => result.data || [])
       .sort((a,b) => Date.parse(b.created_at) - Date.parse(a.created_at))
-    return unavailable || !control || eventsError || originsError
+    return unavailable || !control || eventsError || originsError || removalsError
       ? reply(503, {ok:false, message:'Order queue or ordering status is unavailable.'})
       : reply(200, {ok:true, orders, orderCounts, accessLevel:staff.accessLevel,
         orderingControl:control, orderingEvents:events || [], deliveryOrigins:origins || [],
+        canReviewRetailInvoices:staff.isOwner && staff.accessLevel === 'full',
+        pendingRetailInvoiceRemovals:invoiceRemovals || [],
         automaticDeliveryQuoteAvailable:Boolean(Deno.env.get('OPENROUTESERVICE_API_KEY'))})
   }
   const orderId = cleanText(body.orderId, 40)
+  if (action === 'staff-invoice-review') {
+    if (!staff.isOwner || staff.accessLevel !== 'full')
+      return reply(403,{ok:false,message:'Only the owner can review retail invoice removals.'})
+    const requestId = cleanText(body.requestId,40)
+    const decision = cleanText(body.decision,10)
+    const note = cleanText(body.note,500)
+    if (!validRequestId(requestId) || !['approve','reject'].includes(decision)
+      || (decision === 'reject' && note.length < 3))
+      return reply(422,{ok:false,message:'Choose a decision and explain any rejection.'})
+    const {data,error} = await admin.rpc('customer_review_retail_invoice_removal',{
+      p_request_id:requestId,p_decision:decision,p_actor_admin_user_id:staff.id,p_note:note || null,
+    })
+    return error || !data?.result_action
+      ? reply(409,{ok:false,message:'Invoice removal could not be reviewed. Refresh and try again.'})
+      : reply(200,{ok:true,...data})
+  }
   if (!validRequestId(orderId)) return reply(400, {ok:false, message:'Invalid order ID.'})
   if (action === 'staff-get') {
     const detail = await orderDetail(admin, orderId, true)

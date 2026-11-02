@@ -40,6 +40,7 @@ export function normalizeLiveOrder(order) {
     packaging:order.packaging, status:order.status, paymentStatus:order.payment_status,
     paidAt:order.paid_at, refundedAt:order.refunded_at,
     pickupAddress:order.pickup_address_snapshot,
+    retailInvoice:order.retailInvoice || null,
     receipt:order.receipt ? {
       saleId:order.receipt.sale_id, paymentMethod:order.receipt.payment_method,
       referenceNumber:order.receipt.reference_number, amount:Number(order.receipt.amount),

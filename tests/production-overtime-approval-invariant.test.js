@@ -28,7 +28,8 @@ test('production review forwards without payroll approval',()=>{
 
 test('owner cannot finalize production OT without persisted supervisor verification',()=>{
  assert.match(app,/isProductionOT&&\(!isOwnerRole\|\|!req\.supervisor_reviewed_by\|\|!req\.supervisor_reviewed_at\)/)
- assert.match(app,/!freshRequest\.supervisor_reviewed_by\|\|!freshRequest\.supervisor_reviewed_at/)
+ assert.match(app,/\.select\('supervisor_reviewed_by,supervisor_reviewed_at'\)/)
+ assert.match(app,/!reviewProof\?\.supervisor_reviewed_by\|\|!reviewProof\?\.supervisor_reviewed_at/)
  assert.match(migration,/OWNER_FINAL_APPROVAL_REQUIRED/)
  assert.match(migration,/old\.supervisor_reviewed_by = actor_id/)
  assert.match(app,/OWNER FINAL APPROVE/)
