@@ -115,10 +115,14 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
   const voidEvent = finalStatusEvent(selectedDetail)
 
   function changeQueueView(view, status = 'all') {
-    const nextOrders = ordersForView(orders,view,status)
     setQueueView(view)
     setVoidedStatus(status)
-    setSelectedId(nextOrders[0]?.id || '')
+    setSelectedId('')
+    setDetail(null)
+  }
+
+  function closeSelectedOrder() {
+    setSelectedId('')
     setDetail(null)
   }
 
@@ -148,7 +152,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true)
       setSelectedId(current=>{
         const nextOrders = ordersForView(result.orders,queueView,voidedStatus)
-        return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
+        return nextOrders.some(order=>order.id===current) ? current : ''
       })
       setDetail(null)
       setDetailRefresh(current=>current+1)
@@ -161,10 +165,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     if(!session)return undefined
     let active=true
     request('staff-list').then(result=>{
-      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setRetailInvoices(result.retailInvoices || []);setRetailInvoiceCount(result.retailInvoiceCount || 0);setPendingRetailInvoiceRemovals(result.pendingRetailInvoiceRemovals || []);setCanReviewRetailInvoices(result.canReviewRetailInvoices === true);setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true);onOrdersChange?.(result.orders);setSelectedId(current=>{
-        const nextOrders = ordersForView(result.orders,'pending')
-        return nextOrders.some(order=>order.id===current) ? current : nextOrders[0]?.id || ''
-      })}
+      if(active){setAccessLevel(result.accessLevel);setOrders(result.orders);setOrderCounts(result.orderCounts || {});setRetailInvoices(result.retailInvoices || []);setRetailInvoiceCount(result.retailInvoiceCount || 0);setPendingRetailInvoiceRemovals(result.pendingRetailInvoiceRemovals || []);setCanReviewRetailInvoices(result.canReviewRetailInvoices === true);setOrderingControl(result.orderingControl);setOrderingEvents(result.orderingEvents || []);setDeliveryOrigins(result.deliveryOrigins || []);setAutomaticDeliveryQuoteAvailable(result.automaticDeliveryQuoteAvailable===true);onOrdersChange?.(result.orders)}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
   },[session,request,onOrdersChange])
@@ -471,7 +472,9 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           <small>{order.fulfillment_type} · {order.fulfillment_type==='delivery'&&!order.delivery_quoted_at?'Fee pending':money(order.total)}</small>
         </button>)}
       </section>
-      <section className="staff-panel staff-detail" aria-label="Selected order">
+      {selectedId && <div className="staff-order-detail-overlay" role="presentation" onClick={closeSelectedOrder}>
+      <section className="staff-panel staff-detail" role="dialog" aria-modal="true" aria-label="Selected order" onClick={event=>event.stopPropagation()}>
+        <button type="button" className="staff-detail-close" onClick={closeSelectedOrder}>Close order</button>
         {!selectedDetail ? <p>{selected?'Loading order…':'Select an order.'}</p> : <>
           <div className="staff-title"><h2>{selectedDetail.order_code}</h2><span>{selectedDetail.status.replaceAll('_',' ')}</span></div>
           {selectedDetail.retailInvoice?.status === 'active' && <button type="button" className="staff-invoice-shortcut" disabled={busy} onClick={()=>void printRetailInvoice(selectedDetail.retailInvoice)}>PRINT retail invoice {selectedDetail.retailInvoice.invoice_number}</button>}
@@ -572,6 +575,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
             <button disabled={busy}>Send</button></form>}
         </>}
       </section>
+      </div>}
     </div>
   </main>
 }
