@@ -342,7 +342,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       declined:['declined'],
     }
     const [groupResults, control, {data:events, error:eventsError}, {data:origins, error:originsError},
-      {data:invoiceRemovals,error:removalsError}] = await Promise.all([
+      {data:invoiceRemovals,error:removalsError},
+      {data:retailInvoices,error:retailInvoicesError,count:retailInvoiceCount}] = await Promise.all([
       Promise.all(Object.entries(groups).map(async ([group,statuses]) => ({group,
         result:await admin.from('customer_orders').select(ORDER_FIELDS,{count:'exact'})
           .in('status',statuses).order('created_at',{ascending:false}).limit(100),
@@ -356,18 +357,22 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
           .select('id,order_id,invoice_number,requested_at,invoice_snapshot')
           .eq('status','pending').order('requested_at',{ascending:false}).limit(100)
         : Promise.resolve({data:[],error:null}),
+      admin.from('customer_order_retail_invoices')
+        .select('id,order_id,invoice_number,status,customer_name,scheduled_at,fulfillment_type,total,issued_at', {count:'exact'})
+        .eq('status','active').order('issued_at',{ascending:false}).limit(100),
     ])
     const unavailable = groupResults.some(({result}) => result.error)
     const orderCounts = Object.fromEntries(groupResults.map(({group,result}) => [group,result.count || 0]))
     orderCounts.voided = orderCounts.cancelled + orderCounts.declined
     const orders = groupResults.flatMap(({result}) => result.data || [])
       .sort((a,b) => Date.parse(b.created_at) - Date.parse(a.created_at))
-    return unavailable || !control || eventsError || originsError || removalsError
+    return unavailable || !control || eventsError || originsError || removalsError || retailInvoicesError
       ? reply(503, {ok:false, message:'Order queue or ordering status is unavailable.'})
       : reply(200, {ok:true, orders, orderCounts, accessLevel:staff.accessLevel,
         orderingControl:control, orderingEvents:events || [], deliveryOrigins:origins || [],
         canReviewRetailInvoices:staff.isOwner && staff.accessLevel === 'full',
         pendingRetailInvoiceRemovals:invoiceRemovals || [],
+        retailInvoices:retailInvoices || [], retailInvoiceCount:retailInvoiceCount || 0,
         automaticDeliveryQuoteAvailable:Boolean(Deno.env.get('OPENROUTESERVICE_API_KEY'))})
   }
   const orderId = cleanText(body.orderId, 40)
