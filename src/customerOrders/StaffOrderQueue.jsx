@@ -422,9 +422,11 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       {retailInvoiceCount > retailInvoices.length && <p className="staff-hint">Showing the latest {retailInvoices.length} invoices.</p>}
       <div className="staff-retail-invoice-list">
         {visibleInvoices.length ? visibleInvoices.map(invoice=><div className="staff-retail-invoice-row" key={invoice.id}>
-          <div><strong>{invoice.invoice_number}</strong><br />{invoice.customer_name} · {when(invoice.scheduled_at)} · {money(invoice.total)}</div>
-          <button type="button" disabled={busy} onClick={()=>void openRetailInvoice(invoice)}>View invoice</button>
-          <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoice)}>PRINT invoice</button>
+          <div className="staff-retail-invoice-summary"><strong>{invoice.invoice_number}</strong><span>{invoice.customer_name}</span><span>{when(invoice.scheduled_at)}</span><strong>{money(invoice.total)}</strong></div>
+          <div className="staff-retail-invoice-actions">
+            <button type="button" disabled={busy} onClick={()=>void openRetailInvoice(invoice)}>View invoice</button>
+            <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoice)}>PRINT invoice</button>
+          </div>
         </div>) : <p className="staff-hint">{invoiceSearch?'No matching invoice in the recent list.':'No active retail invoices yet.'}</p>}
       </div>
       {invoicePreview && <div className="staff-invoice-overlay" role="presentation" onClick={()=>setInvoicePreview(null)}>
