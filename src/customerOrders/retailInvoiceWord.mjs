@@ -42,11 +42,11 @@ async function retailInvoicePngPage(invoice) {
     if (!doc) throw new Error('Could not prepare the invoice page.')
     doc.open()
     doc.write(customerRetailInvoiceHtml(invoice).replace('</style>', `
-      html,body{box-sizing:border-box;width:100mm!important;max-width:none!important;margin:0!important;padding:0!important;background:#fff!important;font-size:10px!important;line-height:1.2!important}
+      html,body{box-sizing:border-box;width:100mm!important;max-width:none!important;margin:0!important;padding:0!important;background:#fff!important;font-size:13px!important;line-height:1.2!important}
       body{padding:1.5mm!important}.actions{display:none!important}header{padding-bottom:4px!important}
-      h1{font-size:16px!important}.invoice-meta{font-size:9px!important}
-      h2{font-size:11px!important;margin:6px 0 2px!important}
-      p{margin:4px 0!important}.details{line-height:1.15!important}.muted{font-size:8px!important}.row{gap:6px!important;padding:1px 0!important}
+      h1{font-size:19px!important}.invoice-meta{font-size:10.5px!important}
+      h2{font-size:13px!important;margin:6px 0 2px!important}
+      p{margin:4px 0!important}.details{line-height:1.2!important}.muted{font-size:9.5px!important}.row{gap:6px!important;padding:2px 0!important}
     </style>`))
     doc.close()
     if (doc.fonts?.ready) await doc.fonts.ready
