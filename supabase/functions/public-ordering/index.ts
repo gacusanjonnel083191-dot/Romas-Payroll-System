@@ -308,8 +308,9 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     }
     const nextDate = new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0,10)
     const {data:orders, error:orderError} = await admin.from('customer_orders')
-      .select('id,order_code,status,scheduled_at')
+      .select('id,order_code,status,scheduled_at,phone_verified_at')
       .in('status', ['accepted','preparing','ready','out_for_delivery','completed'])
+      .not('phone_verified_at', 'is', null)
       .gte('scheduled_at', `${date}T00:00:00+08:00`)
       .lt('scheduled_at', `${nextDate}T00:00:00+08:00`)
       .order('id').limit(501)

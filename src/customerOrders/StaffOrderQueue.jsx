@@ -60,7 +60,7 @@ function Login({client, stagingPreview}) {
   </div></main>
 }
 
-export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false, onOrdersChange, onPaymentRecorded}) {
+export default function StaffOrderQueue({client: providedClient = null, serviceUrl = url, publishableKey = key, embedded = false, onOrdersChange, onPaymentRecorded, onForecastChanged}) {
   const client = useMemo(() => providedClient || (url && key ? createClient(url, key, {
     auth: {persistSession:true, autoRefreshToken:true},
   }) : null), [providedClient])
@@ -226,6 +226,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       await request('staff-status',{
         orderId:detail.id,expectedStatus:detail.status,status,note:statusNote,
       })
+      onForecastChanged?.()
       setStatusNote('')
       await refresh()
       const result = await request('staff-get',{orderId:detail.id})
