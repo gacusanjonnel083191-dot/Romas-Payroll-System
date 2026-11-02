@@ -2,7 +2,7 @@ import {useCallback, useEffect, useMemo, useState} from 'react'
 import {createClient} from '@supabase/supabase-js'
 import {callStaffOrdering} from './staffApi.mjs'
 import {ORDER_QUEUE_VIEWS, ordersForView, finalStatusEvent} from './orderQueueViews.mjs'
-import {customerRetailInvoiceHtml} from '../../customer-ordering-preview/customer-invoice.mjs'
+import {downloadRetailInvoiceWord} from './retailInvoiceWord.mjs'
 
 const url = import.meta.env.VITE_SUPABASE_URL || ''
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
@@ -254,16 +254,17 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
     finally{setBusy(false)}
   }
 
-  function printRetailInvoice(invoice = detail?.retailInvoice) {
+  async function printRetailInvoice(invoice = detail?.retailInvoice) {
+    if (!invoice || busy) return
+    setBusy(true);setError('')
     try {
-      const html = customerRetailInvoiceHtml(invoice)
-      const printWindow = window.open('','_blank','width=760,height=900')
-      if (!printWindow) throw new Error('Allow pop-ups to open the retail invoice.')
-      printWindow.opener = null
-      printWindow.document.open()
-      printWindow.document.write(html)
-      printWindow.document.close()
+      const result = await request('staff-get',{orderId:invoice.order_id})
+      const current = result.order?.retailInvoice
+      if (current?.id !== invoice.id || current.status !== 'active')
+        throw new Error('This invoice is no longer active. Refresh the list.')
+      await downloadRetailInvoiceWord(current)
     } catch (failure) { setError(failure.message) }
+    finally { setBusy(false) }
   }
 
   async function openRetailInvoice(invoice) {
@@ -421,11 +422,12 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
         {visibleInvoices.length ? visibleInvoices.map(invoice=><div className="staff-retail-invoice-row" key={invoice.id}>
           <div><strong>{invoice.invoice_number}</strong><br />{invoice.customer_name} · {when(invoice.scheduled_at)} · {money(invoice.total)}</div>
           <button type="button" disabled={busy} onClick={()=>void openRetailInvoice(invoice)}>View invoice</button>
+          <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoice)}>PRINT invoice</button>
         </div>) : <p className="staff-hint">{invoiceSearch?'No matching invoice in the recent list.':'No active retail invoices yet.'}</p>}
       </div>
       {invoicePreview && <div className="staff-retail-invoice-preview" role="status">
         <strong>{invoicePreview.invoice_number}</strong> · {invoicePreview.customer_name} · {money(invoicePreview.total)}
-        <button type="button" onClick={()=>printRetailInvoice(invoicePreview)}>Open or print invoice</button>
+        <button type="button" disabled={busy} onClick={()=>void printRetailInvoice(invoicePreview)}>PRINT invoice</button>
       </div>}
     </section>
     {canReviewRetailInvoices && pendingRetailInvoiceRemovals.length > 0 && <section className="staff-panel" aria-label="Retail invoice removal approvals">
@@ -463,7 +465,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
       <section className="staff-panel staff-detail" aria-label="Selected order">
         {!selectedDetail ? <p>{selected?'Loading order…':'Select an order.'}</p> : <>
           <div className="staff-title"><h2>{selectedDetail.order_code}</h2><span>{selectedDetail.status.replaceAll('_',' ')}</span></div>
-          {selectedDetail.retailInvoice?.status === 'active' && <button type="button" className="staff-invoice-shortcut" onClick={()=>printRetailInvoice(selectedDetail.retailInvoice)}>Open retail invoice {selectedDetail.retailInvoice.invoice_number}</button>}
+          {selectedDetail.retailInvoice?.status === 'active' && <button type="button" className="staff-invoice-shortcut" disabled={busy} onClick={()=>void printRetailInvoice(selectedDetail.retailInvoice)}>PRINT retail invoice {selectedDetail.retailInvoice.invoice_number}</button>}
           {voidEvent && <p className="staff-void-audit" role="status"><strong>{selectedDetail.status==='cancelled'?'Cancelled':'Declined'} by {voidEvent.actor_name || (voidEvent.actor==='customer'?'Customer':'System')}</strong> on {when(voidEvent.created_at)}{voidEvent.note?` · ${voidEvent.note}`:''}. Full activity appears in Order history below.</p>}
           <p><strong>{detail.customer_name}</strong> · {detail.customer_phone}</p>
           {detail.fulfillment_type==='delivery' && <>
@@ -515,7 +517,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
           {detail.retailInvoice?.status === 'active' && <section className="staff-payment" aria-label="Retail order invoice">
             <h3>Retail order invoice {detail.retailInvoice.invoice_number}</h3>
             <p className="staff-hint">Issued at retail prices when the verified order was accepted. This invoice is separate from reseller invoices and the payment receipt.</p>
-            <button type="button" onClick={()=>printRetailInvoice()}>View or print invoice</button>
+            <button type="button" disabled={busy} onClick={()=>void printRetailInvoice()}>PRINT invoice · Download Word</button>
           </section>}
           {detail.retailInvoice?.status === 'pending_removal' && <p className="staff-hint" role="status">Retail invoice {detail.retailInvoice.invoice_number} awaits owner approval for removal. This cancelled order is excluded from the forecast.</p>}
           {detail.retailInvoiceRemoval?.status === 'approved' && <p className="staff-hint" role="status">Retail invoice {detail.retailInvoiceRemoval.invoice_number} was {detail.retailInvoiceRemoval.result_action} after owner approval on {when(detail.retailInvoiceRemoval.reviewed_at)}.</p>}
