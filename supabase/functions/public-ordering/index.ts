@@ -199,7 +199,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
-    if (!isOrderDateAllowed(body.date)) return reply(422, {ok:false, message:'Same-day orders are unavailable. Order by 3:00 PM Philippine time for next-day pickup, or choose a later date.'})
+    if (!isOrderDateAllowed(body.date)) return reply(422, {ok:false, message:'Same-day orders are unavailable. Order by 5:00 PM Philippine time for next-day pickup or delivery, or choose a later date.'})
     const forwardedIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || ''
     const ipLimit = forwardedIp
       ? await consumeRateLimit(admin, rateSecret, 'submit-ip-hour', forwardedIp, 30, 3600) : 'allowed'

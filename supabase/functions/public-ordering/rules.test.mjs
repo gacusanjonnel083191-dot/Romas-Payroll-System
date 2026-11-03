@@ -19,12 +19,13 @@ test('the server recalculates quantities and rejects altered prices', () => {
   assert.equal(pricedItems([{id:'double-choco',quantity:1000}],catalog),null);
 });
 
-test('server rejects same-day pickup and closes next-day orders at 3 PM Manila time', () => {
-  const before = new Date('2026-10-15T14:59:59+08:00');
-  const cutoff = new Date('2026-10-15T15:00:00+08:00');
+test('server rejects same-day pickup and closes next-day orders at 5 PM Manila time', () => {
+  const before = new Date('2026-10-15T16:59:59+08:00');
+  const cutoff = new Date('2026-10-15T17:00:00+08:00');
   const gas = 'Dagupan City - Malued (Centrum Gas)';
   assert.equal(earliestOrderDate(before), '2026-10-16');
   assert.equal(earliestOrderDate(cutoff), '2026-10-17');
+  assert.equal(earliestOrderDate(new Date('2026-10-15T15:30:00+08:00')), '2026-10-16');
   assert.equal(isOrderDateAllowed('2026-10-15', before), false);
   assert.equal(isOrderDateAllowed('2026-10-16', before), true);
   assert.equal(isOrderDateAllowed('2026-10-16', cutoff), false);
@@ -32,7 +33,7 @@ test('server rejects same-day pickup and closes next-day orders at 3 PM Manila t
   assert(validatePickupSchedule(gas, '2026-10-16', '08:00', before));
   assert.equal(validatePickupSchedule(gas, '2026-10-16', '08:00', cutoff), null);
   assert(validatePickupSchedule(gas, '2026-10-17', '08:00', cutoff));
-  assert.equal(earliestOrderDate(new Date('2026-12-31T15:00:00+08:00')), '2027-01-02');
+  assert.equal(earliestOrderDate(new Date('2026-12-31T17:00:00+08:00')), '2027-01-02');
 });
 
 test('server enforces each pickup point’s Manila days and hours', () => {
