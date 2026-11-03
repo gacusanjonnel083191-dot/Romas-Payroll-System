@@ -402,7 +402,7 @@ export default function StaffOrderQueue({client: providedClient = null, serviceU
         {!embedded && <><a href="/">Main system</a><button onClick={()=>void client.auth.signOut()}>Sign out of main system</button></>}</div></header>
     {orderingControl && <section className="staff-ordering-control" aria-label="Customer ordering availability">
       <div><strong role="status">Customer ordering is {orderingControl.enabled?'OPEN':'CLOSED'}</strong>
-        <p>{orderingControl.canOpen?'New customer requests follow the published pickup hours and 3 PM next-day cutoff. Delivery requests require a staff quote and customer confirmation.':'Opening is temporarily locked by the server.'}</p>
+        <p>{orderingControl.canOpen?'New customer requests follow the published pickup hours and 5 PM next-day cutoff. Delivery requests require a staff quote and customer confirmation.':'Opening is temporarily locked by the server.'}</p>
         {orderingEvents.length > 0 && <details><summary>Ordering change history</summary><ol>
           {orderingEvents.map(event=><li key={event.id}>{event.actor_name} {event.new_enabled?'opened':'closed'} ordering · {when(event.created_at)}</li>)}
         </ol></details>}

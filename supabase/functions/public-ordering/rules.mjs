@@ -18,7 +18,7 @@ export function earliestOrderDate(now = new Date()) {
   }).formatToParts(now);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   const today = `${values.year}-${values.month}-${values.day}`;
-  const daysAhead = now.getTime() >= Date.parse(`${today}T15:00:00+08:00`) ? 2 : 1;
+  const daysAhead = now.getTime() >= Date.parse(`${today}T17:00:00+08:00`) ? 2 : 1;
   return new Date(Date.parse(`${today}T12:00:00+08:00`) + daysAhead * 86_400_000).toISOString().slice(0,10);
 }
 

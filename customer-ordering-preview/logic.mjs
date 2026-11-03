@@ -15,7 +15,7 @@ export function phDate(now = new Date()) {
 
 export function earliestOrderDate(now = new Date()) {
   const today = phDate(now);
-  const daysAhead = now.getTime() >= Date.parse(`${today}T15:00:00+08:00`) ? 2 : 1;
+  const daysAhead = now.getTime() >= Date.parse(`${today}T17:00:00+08:00`) ? 2 : 1;
   return phDate(new Date(Date.parse(`${today}T12:00:00+08:00`) + daysAhead * 86_400_000));
 }
 

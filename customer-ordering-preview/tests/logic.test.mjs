@@ -4,13 +4,14 @@ import {availableSlots, earliestOrderDate, feeForDistance, cartSubtotal, COVERAG
 import {PRODUCTS, findProduct, catalogCards} from '../catalog.mjs';
 import {PICKUP_HOURS, earliestOrderDate as serverEarliestOrderDate, validateSchedule} from '../../supabase/functions/public-ordering/rules.mjs';
 
-test('checkout date and slots follow the Manila 3 PM next-day cutoff', () => {
-  const before = new Date('2026-10-13T14:59:59+08:00');
-  const cutoff = new Date('2026-10-13T15:00:00+08:00');
+test('checkout date and slots follow the Manila 5 PM next-day cutoff', () => {
+  const before = new Date('2026-10-13T16:59:59+08:00');
+  const cutoff = new Date('2026-10-13T17:00:00+08:00');
   assert.equal(earliestOrderDate(before), '2026-10-14');
   assert.equal(earliestOrderDate(cutoff), '2026-10-15');
   assert.equal(earliestOrderDate(before), serverEarliestOrderDate(before));
   assert.equal(earliestOrderDate(cutoff), serverEarliestOrderDate(cutoff));
+  assert.equal(earliestOrderDate(new Date('2026-10-13T15:30:00+08:00')), '2026-10-14');
   assert.deepEqual(availableSlots('2026-10-13', before), []);
   assert.equal(availableSlots('2026-10-14', before)[0], '08:00');
   assert.deepEqual(availableSlots('2026-10-14', cutoff), []);
