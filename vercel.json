@@ -1,4 +1,8 @@
 {
+  "redirects": [
+    { "source": "/order", "destination": "/customer-ordering-preview/", "permanent": false },
+    { "source": "/order/", "destination": "/customer-ordering-preview/", "permanent": false }
+  ],
   "headers": [
     {
       "source": "/index.html",
