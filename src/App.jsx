@@ -45806,17 +45806,22 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const smallDonutRows = forecastRows.filter(row => smallDonutKeys.has(forecastNameKey(row.variant_name)))
  const smallDonutPieces = smallDonutRows.reduce((sum, row) => sum + getForecastRowTotal(row), 0)
  const smallDonutLastRow = smallDonutRows[smallDonutRows.length - 1]
- // A screen holds 40 pieces. Show each combined count once, at its group's last variant.
+ // A screen holds 40 pieces. Merge each group's screen cell across its variant rows.
  const screenGroups = [
   {keys:['chocoballs'], label:'Choco Balls'},
   {keys:['matchapops', 'taropops', 'strawberrypops'], label:'3 Pops combined'},
   {keys:['bavarianpops', 'bavarianbites'], label:'Bavarian Pops + Bites'}
  ]
- const screensByLastKey = new Map(screenGroups.map(group => {
+ const screenGroupsByFirstKey = new Map()
+ const screenGroupedKeys = new Set()
+ screenGroups.forEach(group => {
   const groupRows = forecastRows.filter(row => group.keys.includes(forecastNameKey(row.variant_name)))
   const pieces = groupRows.reduce((sum, row) => sum + getForecastRowTotal(row), 0)
-  return [forecastNameKey(groupRows[groupRows.length - 1]?.variant_name || group.keys[group.keys.length - 1]), {pieces, label:group.label}]
- }))
+  if (groupRows.length) {
+   screenGroupsByFirstKey.set(forecastNameKey(groupRows[0].variant_name), {pieces, label:group.label, rowSpan:groupRows.length})
+   groupRows.forEach(row => screenGroupedKeys.add(forecastNameKey(row.variant_name)))
+  }
+ })
  const formatScreens = pieces => (pieces / 40).toLocaleString('en-PH', {maximumFractionDigits:1})
 
  const printForecast = async () => {
@@ -45853,8 +45858,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const dateText = dateParts.length === 3 ? dateParts[1]+' / '+dateParts[2]+' / '+dateParts[0] : rawDate
   const seasonalPackingText = seasonalPacking.map(row => `${row.boxes} x ${row.pieces}-piece box: ${row.shellPieces} Shells + ${row.ringPieces} Rings`).join(' | ')
   const rowHtml = rows.map(row => {
-   const screenGroup = screensByLastKey.get(forecastNameKey(row.variant_name))
-   return '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td><td class="q">'+(screenGroup ? esc(formatScreens(screenGroup.pieces)) : '')+'</td></tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>POPS AND BITES TOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td><td></td></tr>' : '')
+   const key = forecastNameKey(row.variant_name)
+   const screenGroup = screenGroupsByFirstKey.get(key)
+   const screenCell = screenGroup ? '<td class="screen" rowspan="'+screenGroup.rowSpan+'">'+esc(formatScreens(screenGroup.pieces))+'</td>' : screenGroupedKeys.has(key) ? '' : '<td></td>'
+   return '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td>'+screenCell+'</tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>POPS AND BITES TOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td><td></td></tr>' : '')
   }).join('')
 
   node = document.createElement('div')
@@ -45864,12 +45871,13 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    '<div style="border:3px solid #178b3d;border-radius:12px;padding:13px;text-align:center;background:#f0faf2;margin-bottom:11px"><div style="font-size:58px;line-height:1;font-weight:900;color:#178b3d">'+esc(totalDryPremixKg)+' KG</div></div>'+
    '<div style="border:2px solid #e22;border-radius:9px;padding:6px;text-align:center;margin-bottom:11px"><div style="font-size:12px;font-weight:700">TOTAL PIECES (INVOICES '+fmt(invoicePieces)+' + ONLINE '+fmt(onlinePieces)+')</div><div style="font-size:38px;line-height:1;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+' pcs</div></div>'+
    (seasonalPackingText ? '<div style="font-size:17px;font-weight:700;padding:8px;background:#fff9e6;margin-bottom:8px">HALLOWEEN PACKING: '+esc(seasonalPackingText)+' (included in variety totals)</div>' : '')+
-   '<div style="font-size:13px;text-align:center;margin-bottom:5px">Screens: 40 pcs each. Combined counts appear beside Strawberry Pops and Bavarian Bites.</div>'+
+   '<div style="font-size:13px;text-align:center;margin-bottom:5px">Screens: 40 pcs each. Pops and Bavarian screen cells span their combined varieties.</div>'+
    '<table style="width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px"><thead><tr><th style="text-align:left;background:#d91c1c;color:white;padding:10px 14px;width:52%">VARIANT</th><th style="text-align:right;background:#d91c1c;color:white;padding:10px 14px;width:22%">PIECES</th><th style="text-align:right;background:#d91c1c;color:white;padding:10px 14px;width:26%">SCREENS</th></tr></thead><tbody>'+rowHtml+'</tbody><tfoot><tr><td style="border-top:3px solid #d91c1c;padding:8px 9px;font-weight:900">TOTAL</td><td style="border-top:3px solid #d91c1c;padding:8px 9px;text-align:right;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+'</td><td style="border-top:3px solid #d91c1c"></td></tr></tfoot></table>'+
    '<div style="margin-top:28px;padding-top:18px;border-top:2px solid #888;display:flex;justify-content:space-between;font-size:12px;font-weight:700"><span>Prepared by: __________________</span><span>Checked by: __________________</span></div></div>'
   document.body.appendChild(node)
   node.firstElementChild.querySelectorAll('tbody td').forEach(cell => { cell.style.padding=seasonalPacking.length?'12px 16px':'16px 16px'; cell.style.border='1.5px solid #a9a9a9'; cell.style.fontWeight='700'; cell.style.fontSize='24px'; cell.style.lineHeight='1.08' })
   node.firstElementChild.querySelectorAll('tbody td.q').forEach(cell => { cell.style.textAlign='right'; cell.style.fontWeight='900'; cell.style.color='#d91c1c'; cell.style.borderLeft='2.5px solid #777'; cell.style.fontSize='25px' })
+  node.firstElementChild.querySelectorAll('tbody td.screen').forEach(cell => { cell.style.textAlign='center'; cell.style.verticalAlign='middle'; cell.style.fontWeight='900'; cell.style.color='#d91c1c'; cell.style.background='#fff9e6'; cell.style.fontSize='30px' })
 
   const canvas = await html2canvas(node.firstElementChild,{scale:3,backgroundColor:'#fff',useCORS:true,logging:false,width:1300,height:1700})
   const base64 = canvas.toDataURL('image/png',1).split(',')[1]
@@ -45955,41 +45963,42 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {ONLINE_FORECAST_ENABLED && <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{onlineSummary?.orderCount || 0} accepted online order{onlineSummary?.orderCount===1?'':'s'}</span>}
  <span style={{ background:'#fff9e6', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{forecastRows.length} variant{forecastRows.length!==1?'s':''}</span>
  </div>
- <p style={{ fontSize:'11px', color:'#555', margin:'0 0 6px' }}>Combined screens appear on Strawberry Pops (Matcha + Taro + Strawberry) and Bavarian Bites (Bavarian Pops + Bites). Choco Balls is separate.</p>
+ <p style={{ fontSize:'11px', color:'#555', margin:'0 0 6px' }}>Each screen holds 40 pieces. The merged cells combine Matcha, Taro and Strawberry Pops; and Bavarian Pops and Bites. Choco Balls is separate.</p>
  <div style={{ border:'1px solid #eee', borderRadius:'8px', overflowX:'auto' }}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', minWidth:'560px', background:'#ca1b1b', padding:'7px 12px' }}>
- {['Variant','Total Pieces','Total Screens (40 pcs)','Dry Premix'].map(h=><span key={h} style={{ color:'white', fontSize:'11px', fontWeight:'bold', textAlign:h==='Variant'?'left':'right' }}>{h}</span>)}
- </div>
+ <table style={{ borderCollapse:'collapse', tableLayout:'fixed', width:'100%', minWidth:'560px' }}>
+ <thead><tr style={{ background:'#ca1b1b' }}>
+ {['Variant','Total Pieces','Total Screens (40 pcs)','Dry Premix'].map((h,i)=><th key={h} style={{ width:['42%','19%','20%','19%'][i], padding:'7px 12px', color:'white', fontSize:'11px', fontWeight:'bold', textAlign:i===0?'left':'right' }}>{h}</th>)}
+ </tr></thead><tbody>
  {forecastRows.map((r,i)=>{
- const pieces = getForecastRowTotal(r)
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kg = (grams/1000).toFixed(2)
- const screenGroup = screensByLastKey.get(forecastNameKey(r.variant_name))
+ const key = forecastNameKey(r.variant_name)
+ const screenGroup = screenGroupsByFirstKey.get(key)
  return (
  <Fragment key={r.variant_name}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', minWidth:'560px', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }} title={screenGroup ? `${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces ÷ 40` : undefined}>{screenGroup ? formatScreens(screenGroup.pieces) : ''}</span>
- <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
- </div>
+ <tr style={{ background:i%2===0?'white':'#fafafa' }}>
+ <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</td>
+ <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</td>
+ {screenGroup ? <td rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces ÷ 40`} style={{ padding:'7px 12px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'center', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'22px' }}>{formatScreens(screenGroup.pieces)}</td> : !screenGroupedKeys.has(key) && <td style={{ borderTop:'1px solid #f0f0f0' }} />}
+ <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</td>
+ </tr>
  {r === smallDonutLastRow && (
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', minWidth:'560px', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>POPS AND BITES TOTAL</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{smallDonutPieces.toLocaleString('en-PH')}</span>
- <span />
- <span />
- </div>
+ <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+ <td style={{ padding:'9px 12px', fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>POPS AND BITES TOTAL</td>
+ <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{smallDonutPieces.toLocaleString('en-PH')}</td>
+ <td /><td />
+ </tr>
  )}
  </Fragment>
  )
  }) }
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', minWidth:'560px', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{totalPieces.toLocaleString()}</span>
- <span />
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#2d8a4e', fontSize:'16px' }}>{totalDryPremixKg} kg</span>
- </div>
+ <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+ <td style={{ padding:'9px 12px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</td>
+ <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{totalPieces.toLocaleString()}</td>
+ <td />
+ <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e', fontSize:'16px' }}>{totalDryPremixKg} kg</td>
+ </tr>
+ </tbody></table>
  </div>
  </div>
  ): forecastInvoices.length > 0 || (onlineSummary?.orderCount || 0) > 0? (
