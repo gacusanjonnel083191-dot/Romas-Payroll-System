@@ -31173,8 +31173,11 @@ async function computePayroll() {
   const holidayGuardPaidLeaves = (allLeaves || []).filter(isPaidLeaveRecord)
   const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).lte('advance_date', payrollEnd)
   if (caError) throw caError
-  const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
+  const { data:allAdjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
   if (adjsError) throw adjsError
+  // Preserve the build-time OT de-duplication invariant, excluding manually paid
+  // SIL transactions before its canonical adjustment snapshot is computed.
+  const adjs = (allAdjs || []).filter(adj => adj.source_type !== 'sil_manual_paid')
   const { data:approvedOvertimeRequests, error:timeAdjError } = await supabase
   .from('time_adjustment_requests')
   .select('*')
@@ -31422,10 +31425,7 @@ async function computePayroll() {
    }
   }
 
-  // A SIL conversion paid outside payroll is a historical ledger row, not a payroll earning.
-  const adjustmentBreakdown = buildPayrollAdjustmentSnapshot(
-   (adjs || []).filter(adj => adj.source_type !== 'sil_manual_paid')
-  )
+  const adjustmentBreakdown = buildPayrollAdjustmentSnapshot(adjs || [])
   let adjEarnings=0,adjDeductions=0
   for (const adj of adjustmentBreakdown) { if (adj.type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
   const hasPayForCutoff = moneyRound(basicPay + paidLeavePay + overtimePay + nightDiffPay + holidayPay + adjEarnings) > 0
