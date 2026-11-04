@@ -28139,10 +28139,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  async function processFinalPay() {
  if (!finalPayResult) return
  // Re-read the SIL balance/rate before approving a previously computed final-pay preview.
- const { data:latestEmployee, error:silCheckError } = await supabase.from('employees')
+ const { data:latestEmployee, error:silCheckError } = await supabase.from('employee_access')
   .select('sil_balance,daily_rate,is_active').eq('id',finalPayEmployeeId).maybeSingle()
  if (silCheckError || !latestEmployee || !latestEmployee.is_active) {
   showToast('Cannot verify current employee SIL balance. Refresh and recompute final pay.', 'red'); return
+ }
+ if (latestEmployee.sil_balance == null || latestEmployee.daily_rate == null) {
+  showToast('Your session cannot access final-pay balances. Sign in again with an owner or payroll account and recompute final pay.', 'red'); return
  }
  if (safeNum(latestEmployee.sil_balance,0)!==safeNum(finalPayResult.unusedSIL,0) ||
      moneyRound(safeNum(latestEmployee.daily_rate,0))!==moneyRound(safeNum(finalPayResult.dailyRate,0))) {
