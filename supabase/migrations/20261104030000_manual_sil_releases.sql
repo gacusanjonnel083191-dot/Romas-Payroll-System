@@ -146,6 +146,16 @@ begin
     if p_covered_from<>v_cycle_start or p_covered_to<>v_cycle_end then
       raise exception 'The claim does not match the current SIL cycle. Choose a pending annual conversion for an older cycle.';
     end if;
+    -- syncEmployeeSIL uses a credit audit marker as its reset guard; do not allow
+    -- a manual payment without it or the next sync could restore the paid days.
+    if not exists(
+      select 1 from public.audit_logs
+      where action='SIL CREDITED'
+        and position(p_employee_id::text in coalesce(details,''))>0
+        and position(v_cycle_start::text in coalesce(details,''))>0
+    ) then
+      raise exception 'SIL cycle was not credited yet. Run the existing SIL check/apply workflow first, then refresh.';
+    end if;
     if p_release_date < v_cycle_start then
       raise exception 'Payment date predates the current SIL entitlement cycle.';
     end if;
@@ -231,7 +241,10 @@ begin
   if exists(select 1 from public.sil_manual_releases where expense_id=old.id) then
     raise exception 'This expense belongs to a manual SIL payment. Do not edit/void/delete it directly; use a documented reversal.';
   end if;
-  return case when tg_op='DELETE' then old else new end;
+  if tg_op='DELETE' then
+    return old;
+  end if;
+  return new;
 end $function$;
 drop trigger if exists protect_manual_sil_expense on public.daily_expenses;
 create trigger protect_manual_sil_expense before update or delete
