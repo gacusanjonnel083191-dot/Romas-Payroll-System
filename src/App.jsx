@@ -45965,9 +45965,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  <p style={{ fontSize:'11px', color:'#555', margin:'0 0 6px' }}>Each screen holds 40 pieces. The merged cells combine Matcha, Taro and Strawberry Pops; and Bavarian Pops and Bites. Choco Balls is separate.</p>
  <div style={{ border:'1px solid #eee', borderRadius:'8px', overflowX:'auto' }}>
- <table style={{ borderCollapse:'collapse', tableLayout:'fixed', width:'100%', minWidth:'560px' }}>
+ <table style={{ borderCollapse:'collapse', tableLayout:'fixed', width:'100%', minWidth:'650px' }}>
+ <colgroup><col style={{ width:'42%' }} /><col style={{ width:'19%' }} /><col style={{ width:'13%' }} /><col style={{ width:'7%' }} /><col style={{ width:'19%' }} /></colgroup>
  <thead><tr style={{ background:'#ca1b1b' }}>
- {['Variant','Total Pieces','Total Screens (40 pcs)','Dry Premix'].map((h,i)=><th key={h} style={{ width:['42%','19%','20%','19%'][i], padding:'7px 12px', color:'white', fontSize:'11px', fontWeight:'bold', textAlign:i===0?'left':'right' }}>{h}</th>)}
+ {['Variant','Total Pieces','Total Screens (40 pcs)','Dry Premix'].map((h,i)=><th key={h} colSpan={i===2?2:1} style={{ padding:'7px 12px', color:'white', fontSize:'11px', fontWeight:'bold', textAlign:i===0?'left':'right' }}>{h}</th>)}
  </tr></thead><tbody>
  {forecastRows.map((r,i)=>{
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
@@ -45979,14 +45980,17 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <tr style={{ background:i%2===0?'white':'#fafafa' }}>
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</td>
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</td>
- {screenGroup ? <td rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces ÷ 40`} style={{ padding:'7px 36px 7px 12px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'right', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'22px' }}>{formatScreens(screenGroup.pieces)}</td> : !screenGroupedKeys.has(key) && <td style={{ borderTop:'1px solid #f0f0f0' }} />}
+ {screenGroup ? <>
+ <td rowSpan={screenGroup.rowSpan} style={{ borderTop:'1px solid #f0f0f0' }} />
+ <td rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces ÷ 40`} style={{ padding:'7px 2px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'center', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'22px' }}>{formatScreens(screenGroup.pieces)}</td>
+ </> : !screenGroupedKeys.has(key) && <><td style={{ borderTop:'1px solid #f0f0f0' }} /><td style={{ borderTop:'1px solid #f0f0f0' }} /></>}
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</td>
  </tr>
  {r === smallDonutLastRow && (
  <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
  <td style={{ padding:'9px 12px', fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>POPS AND BITES TOTAL</td>
  <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{smallDonutPieces.toLocaleString('en-PH')}</td>
- <td /><td />
+ <td /><td /><td />
  </tr>
  )}
  </Fragment>
@@ -45995,7 +45999,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
  <td style={{ padding:'9px 12px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</td>
  <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{totalPieces.toLocaleString()}</td>
- <td />
+ <td /><td />
  <td style={{ padding:'9px 12px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e', fontSize:'16px' }}>{totalDryPremixKg} kg</td>
  </tr>
  </tbody></table>
