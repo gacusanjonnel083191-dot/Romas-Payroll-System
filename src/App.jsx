@@ -8,6 +8,7 @@ import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArriv
 import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
+import { parseSILCashoutCycle, runManualSILReleaseCommand } from './silManualReleaseIntegrity.js'
 import {
  filterProductionForecastInvoices,
  isInvoiceExcludedFromProductionForecastPolicy
@@ -7427,6 +7428,13 @@ export default function App() {
  const [manualSILClaimAmount, setManualSILClaimAmount] = useState('')
  const [manualSILClaimPeriodStart, setManualSILClaimPeriodStart] = useState('')
  const [manualSILClaimPeriodEnd, setManualSILClaimPeriodEnd] = useState('')
+ const [manualSILPaymentMethod, setManualSILPaymentMethod] = useState('cash')
+ const [manualSILPaymentReference, setManualSILPaymentReference] = useState('')
+ const [manualSILPaymentNotes, setManualSILPaymentNotes] = useState('')
+ const [manualSILSelectedCashoutId, setManualSILSelectedCashoutId] = useState('')
+ const [manualSILReleases, setManualSILReleases] = useState([])
+ const [manualSILPaymentLoading, setManualSILPaymentLoading] = useState(false)
+ const manualSILRequestIdRef = useRef('')
  // Contracts module
  const [contracts, setContracts] = useState([])
  const [contractsLoading, setContractsLoading] = useState(false)
@@ -19236,6 +19244,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  async function deleteExpense(id) {
  if (!requireOwnerAction('void company expense')) return
+ const linkedSIL = (dailyExpenses || []).find(expense => String(expense.id) === String(id))
+ if (linkedSIL?.category === 'SIL Cash Conversion') {
+  showToast('This expense is linked to a manual SIL release. It cannot be voided alone; use documented SIL payment reversal.', 'red')
+  return
+ }
  if (!window.confirm('Void this expense record? It will stay in the system for audit safety and will not be permanently deleted.')) return
  const { error } = await supabase.from('daily_expenses').update({ status:'voided', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', id)
  if (error) { showToast(' Failed: '+error.message, 'red'); return }
@@ -27758,7 +27771,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
  let released = 0
- for (const adj of cashouts || []) {
+ for (const adj of (cashouts || []).filter(row => row.source_type !== 'sil_manual_paid')) {
  const marked = await markSILCashoutReleased(adj, {...options, silent:true })
  if (marked) released++
  }
@@ -27786,7 +27799,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  if (error) return 0
 
  let released = 0
- for (const adj of cashouts || []) {
+ for (const adj of (cashouts || []).filter(row => row.source_type !== 'sil_manual_paid')) {
  const alreadyReleased = await silReleaseMarkerExists(adj.id)
  if (alreadyReleased) continue
 
@@ -27839,6 +27852,12 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 .eq('action', 'SIL RELEASED/PAID')
 .order('created_at', { ascending:false })
 
+ const { data:manualRows, error:manualError } = await supabase
+.from('sil_manual_releases').select('*').order('release_date', { ascending:false }).limit(500)
+ if (manualError) console.warn('SIL payment ledger is unavailable; apply the manual SIL release migration:', manualError.message)
+ setManualSILReleases(manualRows || [])
+ const manualByAdjustment = new Map((manualRows || []).filter(row => row.source_adjustment_id)
+   .map(row => [String(row.source_adjustment_id), row]))
  const releaseMap = {}
 ;(releases || []).forEach(log => {
  const match = String(log.details || '').match(/ADJ:([^\s|]+)/)
@@ -27847,11 +27866,14 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  const rows = (cashouts || []).map(adj => {
  const log = releaseMap[String(adj.id)]
+ const manual = manualByAdjustment.get(String(adj.id))
  return {
 ...adj,
- isReleased:!!log,
- releasedAt: log?.created_at || null,
- releasedBy: log?.performed_by || null
+ isReleased:!!log || !!manual || adj.source_type==='sil_manual_paid',
+ releasedAt: manual?.release_date || log?.created_at || null,
+ releasedBy: manual?.created_by_name || log?.performed_by || null,
+ releaseMethod: manual?.payment_method || (log ? 'Payroll/legacy' : ''),
+ expenseId: manual?.expense_id || null
  }
  })
 
@@ -27860,16 +27882,98 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
  async function handleManualSILRelease(adj) {
- if (!window.confirm(`Mark unused SIL conversion for ${adj.employee_name} as RELEASED/PAID?\n\nAmount: ${php(adj.amount)}\nDate: ${adj.adjustment_date}`)) return
-
- const marked = await markSILCashoutReleased(adj, { auto:false })
- if (marked) {
- showToast(' SIL marked as released/paid!')
- loadSILCashouts({ skipAuto:true })
- } else {
- showToast('This SIL cashout is already marked as released/paid.', 'red')
- loadSILCashouts({ skipAuto:true })
+ if (!requireOwnerAction('record a manual SIL payment')) return
+ if (!adj?.id || adj.isReleased) {
+  showToast('This SIL conversion is already released. Reconcile it before another payment.', 'red')
+  return
  }
+ const claim = parseSILCashoutCycle(adj.notes)
+ if (!claim) {
+  showToast('The automatic SIL conversion has incomplete covered-period metadata. Reconcile before paying.', 'red')
+  return
+ }
+ setManualSILSelectedCashoutId(String(adj.id))
+ setManualSILClaimEmployeeId(String(adj.employee_id))
+ setManualSILClaimDate(today)
+ setManualSILClaimDays(String(claim.days))
+ setManualSILClaimAmount(String(adj.amount))
+ setManualSILClaimPeriodStart(claim.start)
+ setManualSILClaimPeriodEnd(claim.end)
+ setManualSILPaymentReference('')
+ setManualSILPaymentNotes('')
+ manualSILRequestIdRef.current = ''
+ showToast('Pending SIL conversion selected. Enter method and receipt reference, then record the payment.')
+ try { document.getElementById('manual-sil-payment-form')?.scrollIntoView({ behavior:'smooth', block:'center' }) } catch(e) {}
+ }
+
+ async function recordManualSILPayment() {
+ if (!requireOwnerAction('record a manual SIL payment')) return
+ if (manualSILPaymentLoading) return
+ const emp = employees.find(e => String(e.id) === String(manualSILClaimEmployeeId))
+ if (!emp) { showToast('Select the employee receiving SIL payment.', 'red'); return }
+ const linked = manualSILSelectedCashoutId
+  ? silCashouts.find(row => String(row.id) === String(manualSILSelectedCashoutId))
+  : null
+ if (manualSILSelectedCashoutId && (!linked || linked.isReleased || String(linked.employee_id)!==String(emp.id))) {
+  showToast('Selected SIL conversion changed or was paid. Refresh the list.', 'red')
+  return
+ }
+ const cycle = getCurrentSILCycle(emp.hire_date)
+ const claim = linked ? parseSILCashoutCycle(linked.notes) : null
+ const days = Number(manualSILClaimDays || (linked ? claim?.days : 0))
+ const amount = moneyRound(manualSILClaimAmount === '' ? days*safeNum(emp.daily_rate,0) : Number(manualSILClaimAmount))
+ const paymentDate = manualSILClaimDate || today
+ const coveredFrom = manualSILClaimPeriodStart || (linked ? claim?.start : cycle?.start)
+ const coveredTo = manualSILClaimPeriodEnd || (linked ? claim?.end : cycle?.end)
+ const reference = manualSILPaymentReference.trim()
+ const reason = manualSILPaymentNotes.trim()
+ if (!Number.isInteger(days) || days < 1 || days > 5 || !Number.isFinite(amount) || amount<=0) {
+  showToast('Enter 1–5 whole unused SIL days and a positive peso amount.', 'red'); return
+ }
+ if (!paymentDate || !coveredFrom || !coveredTo || coveredFrom>coveredTo || paymentDate>today) {
+  showToast('Choose valid SIL coverage and a payment date that is not in the future.', 'red'); return
+ }
+ if (reference.length<3) { showToast('Enter the receipt number or signed acknowledgement reference.', 'red'); return }
+ if (!linked && !cycle) { showToast('This employee is not yet eligible for current-cycle SIL. Review entitlement first.', 'red'); return }
+ if (!linked && (coveredFrom!==cycle.start || coveredTo!==cycle.end)) {
+  showToast('Manual payment without a generated conversion must use the current SIL cycle. Select an existing conversion for a prior cycle.', 'red'); return
+ }
+ if (!linked && days>safeNum(emp.sil_balance,0)) {
+  showToast('SIL days exceed the employee’s current balance. Refresh employee records.', 'red'); return
+ }
+ if (!linked && moneyRound(days*safeNum(emp.daily_rate,0))!==amount && reason.length<10) {
+  showToast('Explain the amount override in Payment Notes (at least 10 characters).', 'red'); return
+ }
+ if (!window.confirm(`Confirm SIL was ACTUALLY PAID?\n\nEmployee: ${emp.full_name}\nDays: ${days}\nAmount: ${php(amount)}\nPayment Date: ${paymentDate}\nMethod: ${manualSILPaymentMethod.toUpperCase()}\nReceipt: ${reference}\n\nThis immediately creates an expense and updates SIL/payment records. It does NOT send money.`)) return
+ if (!manualSILRequestIdRef.current) manualSILRequestIdRef.current = window.crypto?.randomUUID?.() || ''
+ if (!manualSILRequestIdRef.current) { showToast('Secure request ID unavailable. Open the app over HTTPS.', 'red'); return }
+ setManualSILPaymentLoading(true)
+ const result = await runManualSILReleaseCommand(supabase, {
+  p_request_id:manualSILRequestIdRef.current,
+  p_employee_id:emp.id,
+  p_release_date:paymentDate,
+  p_unused_days:days,
+  p_amount:amount,
+  p_payment_method:manualSILPaymentMethod,
+  p_payment_reference:reference,
+  p_covered_from:coveredFrom,
+  p_covered_to:coveredTo,
+  p_notes:reason,
+  p_adjustment_id:linked?.id || null
+ })
+ setManualSILPaymentLoading(false)
+ if (!result.ok) { showToast('SIL payment was not recorded: ' + result.error, 'red'); return }
+ manualSILRequestIdRef.current = ''
+ setManualSILSelectedCashoutId('')
+ setManualSILPaymentReference('')
+ setManualSILPaymentNotes('')
+ setManualSILClaimDays('')
+ setManualSILClaimAmount('')
+ showToast(`SIL payment ${result.existing?'already recorded':'recorded'}: ${php(result.amount)}. Expense and SIL ledger linked.`, 'green')
+ await Promise.all([loadSILCashouts({ skipAuto:true }),loadEmployees(),loadDailyExpenses()])
+ if (financialMonth === String(paymentDate).slice(0,7)) loadFinancialData()
+ refreshFoundationAfterDataChange('manual-sil-payment')
+ setFinalPayResult(null)
  }
 
  async function saveSchedule() {
@@ -27971,6 +28075,20 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 ? Math.max(0, safeNum(activeEmp.sil_balance, 0))
 : 0
  const silPay = unusedSIL * Number(activeEmp.daily_rate || 0)
+ const silCycle = getCurrentSILCycle(activeEmp.hire_date)
+ const { data:alreadyPaidSIL, error:alreadyPaidSILError } = silCycle
+  ? await supabase.from('sil_manual_releases')
+     .select('unused_days,amount,covered_from,covered_to')
+     .eq('employee_id', finalPayEmployeeId)
+     .eq('covered_from',silCycle.start)
+     .eq('covered_to',silCycle.end)
+  : { data:[], error:null }
+ if (alreadyPaidSILError) {
+  showToast('Cannot verify prior SIL payments for final pay. Check the SIL payment migration: '+alreadyPaidSILError.message,'red')
+  return
+ }
+ const previouslyPaidSILDays = (alreadyPaidSIL || []).reduce((sum,row) => sum + safeNum(row.unused_days,0),0)
+ const previouslyPaidSILAmount = moneyRound((alreadyPaidSIL || []).reduce((sum,row) => sum + safeNum(row.amount,0),0))
 
  const hireDate=activeEmp.hire_date?new Date(activeEmp.hire_date):new Date(finalPayLastDate)
  const yearsOfService=Math.max(0,Math.floor((new Date(finalPayLastDate).getTime()-hireDate.getTime())/(1000*60*60*24*365)))
@@ -27999,6 +28117,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  proRated13th,
  unusedSIL,
   silPay,
+  previouslyPaidSILDays,
+  previouslyPaidSILAmount,
   separationPay,
   totalCA,
  grossFinalPay,
@@ -28018,6 +28138,18 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
  async function processFinalPay() {
  if (!finalPayResult) return
+ // Re-read the SIL balance/rate before approving a previously computed final-pay preview.
+ const { data:latestEmployee, error:silCheckError } = await supabase.from('employees')
+  .select('sil_balance,daily_rate,is_active').eq('id',finalPayEmployeeId).maybeSingle()
+ if (silCheckError || !latestEmployee || !latestEmployee.is_active) {
+  showToast('Cannot verify current employee SIL balance. Refresh and recompute final pay.', 'red'); return
+ }
+ if (safeNum(latestEmployee.sil_balance,0)!==safeNum(finalPayResult.unusedSIL,0) ||
+     moneyRound(safeNum(latestEmployee.daily_rate,0))!==moneyRound(safeNum(finalPayResult.dailyRate,0))) {
+  setFinalPayResult(null)
+  showToast('SIL balance or daily rate changed since final pay was computed. Recompute to prevent duplicate SIL payment.', 'red')
+  return
+ }
  const preview = getFinalPaySettlementPreview(finalPayResult)
  if (finalPayResult.totalCA > 0 && finalPaySettleCashAdvance && !finalPaySettlementAuthorization.trim()) {
   showToast('Enter the signed cash-advance or separation authorization reference before deducting from final pay.','red'); return
@@ -31046,8 +31178,11 @@ async function computePayroll() {
   const holidayGuardPaidLeaves = (allLeaves || []).filter(isPaidLeaveRecord)
   const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).lte('advance_date', payrollEnd)
   if (caError) throw caError
-  const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
+  const { data:allAdjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
   if (adjsError) throw adjsError
+  // Preserve the build-time OT de-duplication invariant, excluding manually paid
+  // SIL transactions before its canonical adjustment snapshot is computed.
+  const adjs = (allAdjs || []).filter(adj => adj.source_type !== 'sil_manual_paid')
   const { data:approvedOvertimeRequests, error:timeAdjError } = await supabase
   .from('time_adjustment_requests')
   .select('*')
@@ -31617,6 +31752,9 @@ async function computePayroll() {
  amountRow(`Last Salary (${safeNum(fp.unpaidDays, 0)} day(s))`, money(fp.lastSalary), y); y += 66
  amountRow('Pro-rated 13th Month Pay', money(fp.proRated13th), y, true); y += 66
  amountRow(`Unused SIL (${safeNum(fp.unusedSIL, 0)} day(s))`, money(fp.silPay), y); y += 66
+ if (safeNum(fp.previouslyPaidSILDays,0)>0) {
+  amountRow(`Previously paid SIL (${safeNum(fp.previouslyPaidSILDays,0)} day(s)) — excluded`, money(fp.previouslyPaidSILAmount), y); y += 66
+ }
  amountRow('Separation Pay', money(fp.separationPay), y, true); y += 88
 
  roundedRect(left, y, contentWidth, 58, 10, '#fff0f0')
@@ -39579,17 +39717,18 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <button style={{...btnBlack, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>loadSILCashouts()}> REFRESH SIL RELEASES</button>
  </div>
 
- <div style={{ background:'white', border:'1px solid #f3e0a0', borderRadius:'12px', padding:'14px', marginTop:'12px' }}>
+ <div id="manual-sil-payment-form" style={{ background:'white', border:'1px solid #f3e0a0', borderRadius:'12px', padding:'14px', marginTop:'12px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
  <div>
- <h4 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'14px' }}> Manual SIL Claim Print</h4>
- <p style={{ margin:0, color:'#777', fontSize:'12px' }}>Use this when no automatic unused SIL conversion record has been generated yet. This only prints the claim form and does not create payroll/payment records.</p>
+ <h4 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'14px' }}>Manual SIL Claim / Release</h4>
+ <p style={{ margin:0, color:'#777', fontSize:'12px' }}>Printing is documentation only. After paying the employee, RECORD MANUAL SIL PAYMENT creates an approved SIL expense, updates the SIL balance or pending conversion, and records an auditable payment. Cash is not transferred through this button.</p>
+ {manualSILSelectedCashoutId && <p style={{ fontSize:'12px', fontWeight:'bold', color:'#a16207' }}>Linked to pending annual SIL conversion. The full saved days, dates and amount must match. <button type="button" style={{ border:'none', background:'transparent', textDecoration:'underline', cursor:'pointer', color:'#ca1b1b' }} onClick={()=>{setManualSILSelectedCashoutId('');manualSILRequestIdRef.current=''}}>CLEAR LINK</button></p>}
  </div>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr 1fr', gap:'10px', alignItems:'end' }}>
  <div>
  <label style={lblS}>Employee</label>
- <EmployeeSelect value={manualSILClaimEmployeeId} onChange={setManualSILClaimEmployeeId} employees={employees} />
+ <EmployeeSelect value={manualSILClaimEmployeeId} onChange={id=>{setManualSILClaimEmployeeId(id);setManualSILSelectedCashoutId('');manualSILRequestIdRef.current=''}} employees={employees} />
  </div>
  <div>
  <label style={lblS}>Claim Date</label>
@@ -39615,7 +39754,22 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  <button style={{...btnBlack, width:isMobile?'100%':'auto', padding:'11px 16px', marginTop:0, marginBottom:'12px', fontSize:'12px' }} onClick={printManualSILClaim}> PRINT MANUAL SIL CLAIM</button>
  </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 2fr 2fr', gap:'10px', alignItems:'end', marginTop:'8px' }}>
+ <div><label style={lblS}>Payment Method</label><select style={inputStyle} value={manualSILPaymentMethod} onChange={e=>{setManualSILPaymentMethod(e.target.value);manualSILRequestIdRef.current=''}}><option value="cash">Cash</option><option value="online">Online Transfer</option></select></div>
+ <div><label style={lblS}>Receipt / Signed Acknowledgement Reference (required)</label><input style={inputStyle} value={manualSILPaymentReference} maxLength={160} onChange={e=>{setManualSILPaymentReference(e.target.value);manualSILRequestIdRef.current=''}} placeholder="e.g. SIL-2026-0001 or transfer reference" /></div>
+ <div><label style={lblS}>Payment Notes / Amount Override Reason</label><input style={inputStyle} value={manualSILPaymentNotes} maxLength={800} onChange={e=>{setManualSILPaymentNotes(e.target.value);manualSILRequestIdRef.current=''}} placeholder="Optional; required if amount differs from rate" /></div>
  </div>
+ <button style={{...btnGreen, width:'auto', padding:'11px 16px', marginTop:'7px', fontSize:'12px' }} disabled={manualSILPaymentLoading || !isOwnerRole} onClick={recordManualSILPayment}>{manualSILPaymentLoading?'RECORDING SIL PAYMENT...':'RECORD MANUAL SIL PAYMENT'}</button>
+ <p style={{ fontSize:'11px', color:'#777', margin:'5px 0 0' }}>Owner only. Record an actual completed payment, not an authorization to pay. The same reference and SIL days should not be entered in ordinary expenses or payroll again.</p>
+ </div>
+
+ {manualSILReleases.length>0 && <div style={{ background:'#fff', padding:'12px', borderRadius:'10px', marginTop:'12px', border:'1px solid #eddca0' }}>
+ <strong style={{ fontSize:'13px', color:'#1a1a2e' }}>Manual SIL Payment Ledger ({manualSILReleases.length})</strong>
+ {manualSILReleases.slice(0,25).map(item=><div key={item.id} style={{ fontSize:'12px', borderTop:'1px solid #eee', padding:'8px 0', marginTop:'7px' }}>
+  <strong>{item.employee_name}</strong> — {item.unused_days} day(s), {php(item.amount)} · Paid {item.release_date} ({item.payment_method}) · Receipt: {item.payment_reference} · Expense linked
+  <button style={{...btnBlack, width:'auto', padding:'5px 10px', fontSize:'11px', marginLeft:'8px' }} onClick={()=>printSILClaim({ employee_name:item.employee_name, employee_code:item.employee_code, adjustment_date:item.release_date, amount:item.amount, notes:`Manual SIL payment: ${item.unused_days} day(s) from ${item.covered_from} to ${item.covered_to} | ${item.payment_reference}`, isReleased:true, releasedAt:item.release_date, releasedBy:item.created_by_name })}>PRINT CLAIM</button>
+ </div>)}
+ </div>}
 
  {silCashoutsLoading && <p style={{ color:'#888', fontSize:'13px' }}>Loading SIL cashouts...</p>}
 
@@ -39632,14 +39786,14 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  <p style={cps}>Date: {adj.adjustment_date} | Amount: <strong>{php(adj.amount)}</strong></p>
  <p style={cps}>{adj.notes || 'Unused SIL conversion'}</p>
- {adj.isReleased && <p style={{...cps, color:'#2d8a4e', fontWeight:'bold' }}>Released/Paid: {new Date(adj.releasedAt).toLocaleString()} {adj.releasedBy? `by ${adj.releasedBy}`: ''}</p>}
+ {adj.isReleased && <p style={{...cps, color:'#2d8a4e', fontWeight:'bold' }}>Released/Paid: {adj.releasedAt} {adj.releasedBy? `by ${adj.releasedBy}`: ''} {adj.expenseId? '| Expense linked':''}</p>}
  </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', justifyContent:'flex-end' }}>
  <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'10px', padding:'9px 14px', marginTop:0, fontSize:'12px', fontWeight:'bold', cursor:'pointer' }} onClick={()=>printSILClaim(adj)}> PRINT SIL CLAIM</button>
  {adj.isReleased? (
  <button style={{...btnGray, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px', cursor:'default' }} disabled> PAID</button>
  ): (
- <button style={{...btnGreen, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>handleManualSILRelease(adj)}> SIL RELEASED/PAID</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>handleManualSILRelease(adj)}> RECORD MANUAL PAYMENT</button>
  )}
  </div>
  </div>
@@ -40296,6 +40450,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ display:'flex', justifyContent:'space-between', padding:'4px 0' }}><span>Last Salary ({finalPayResult.unpaidDays} days)</span><span>{php(finalPayResult.lastSalary)}</span></div>
  <div style={{ display:'flex', justifyContent:'space-between', padding:'4px 0' }}><span>Pro-rated 13th Month</span><span>{php(finalPayResult.proRated13th)}</span></div>
  <div style={{ display:'flex', justifyContent:'space-between', padding:'4px 0' }}><span>Unused SIL ({finalPayResult.unusedSIL} days)</span><span>{php(finalPayResult.silPay)}</span></div>
+ {finalPayResult.previouslyPaidSILDays>0 && <p style={{ color:'#2d8a4e', fontSize:'12px', margin:'3px 0' }}>Already paid separately: {finalPayResult.previouslyPaidSILDays} SIL day(s), {php(finalPayResult.previouslyPaidSILAmount)}. Excluded from remaining SIL and final pay.</p>}
  <div style={{ display:'flex', justifyContent:'space-between', padding:'4px 0' }}><span>Separation Pay</span><span>{php(finalPayResult.separationPay)}</span></div>
  <hr style={{ margin:'12px 0', borderColor:'#eee' }} />
  <p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'6px' }}>DEDUCTIONS</p>
