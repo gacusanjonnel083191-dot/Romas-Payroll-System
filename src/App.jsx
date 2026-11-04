@@ -19244,6 +19244,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  async function deleteExpense(id) {
  if (!requireOwnerAction('void company expense')) return
+ const linkedSIL = (dailyExpenses || []).find(expense => String(expense.id) === String(id))
+ if (linkedSIL?.category === 'SIL Cash Conversion') {
+  showToast('This expense is linked to a manual SIL release. It cannot be voided alone; use documented SIL payment reversal.', 'red')
+  return
+ }
  if (!window.confirm('Void this expense record? It will stay in the system for audit safety and will not be permanently deleted.')) return
  const { error } = await supabase.from('daily_expenses').update({ status:'voided', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', id)
  if (error) { showToast(' Failed: '+error.message, 'red'); return }
@@ -27864,7 +27869,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const manual = manualByAdjustment.get(String(adj.id))
  return {
 ...adj,
- isReleased:!!log || !!manual,
+ isReleased:!!log || !!manual || adj.source_type==='sil_manual_paid',
  releasedAt: manual?.release_date || log?.created_at || null,
  releasedBy: manual?.created_by_name || log?.performed_by || null,
  releaseMethod: manual?.payment_method || (log ? 'Payroll/legacy' : ''),
