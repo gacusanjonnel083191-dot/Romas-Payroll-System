@@ -1,4 +1,5 @@
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
+import { formatProductionScreens } from './productionScreenBreakdown.js'
 import { canViewEmployeeDeliverySummary } from './employeeDeliverySummaryPolicy.js'
 import { SEASONAL_BOXES, seasonalBoxFor, assertWholeSeasonalBoxes, physicalDonutQuantity, expandSeasonalProductionItems, seasonalPackingSummary } from './seasonalBoxPolicy.js'
 import { dailyPosClosing } from './posClosingSummary.js'
@@ -45980,7 +45981,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    groupRows.forEach(row => screenGroupedKeys.add(forecastNameKey(row.variant_name)))
   }
  })
- const formatScreens = pieces => (pieces / 40).toLocaleString('en-PH', {maximumFractionDigits:1})
+ const formatScreens = formatProductionScreens
 
  const printForecast = async () => {
  if (!onlineForecastReady) { showToast('Online orders must load before printing a production order.','red'); return }
@@ -46138,10 +46139,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <tr style={{ background:i%2===0?'white':'#fafafa' }}>
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</td>
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</td>
- {screenGroup ? <>
- <td rowSpan={screenGroup.rowSpan} style={{ borderTop:'1px solid #f0f0f0' }} />
- <td rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces ÷ 40`} style={{ padding:'7px 2px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'center', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'22px' }}>{formatScreens(screenGroup.pieces)}</td>
- </> : !screenGroupedKeys.has(key) && <><td style={{ borderTop:'1px solid #f0f0f0' }} /><td style={{ borderTop:'1px solid #f0f0f0' }} /></>}
+ {screenGroup ? <td colSpan={2} rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces = ${formatScreens(screenGroup.pieces)}`} style={{ padding:'7px 4px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'center', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', whiteSpace:'nowrap' }}>{formatScreens(screenGroup.pieces)}</td> : !screenGroupedKeys.has(key) && <td colSpan={2} style={{ borderTop:'1px solid #f0f0f0' }} />}
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</td>
  </tr>
  {r === smallDonutLastRow && (
