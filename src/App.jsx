@@ -46147,7 +46147,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</td>
  {screenGroup ? <>
  <td rowSpan={screenGroup.rowSpan} style={{ borderTop:'1px solid #f0f0f0' }} />
- <td rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces = ${formatScreens(screenGroup.pieces)}`} style={{ padding:'7px 2px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'center', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', whiteSpace:'nowrap' }}>{formatScreens(screenGroup.pieces)}</td>
+ <td rowSpan={screenGroup.rowSpan} title={`${screenGroup.label}: ${screenGroup.pieces.toLocaleString('en-PH')} pieces = ${formatScreens(screenGroup.pieces, screenGroup.capacity)}`} style={{ padding:'7px 2px', border:'1px solid #f2dcba', background:'#fff9e6', textAlign:'center', verticalAlign:'middle', fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', whiteSpace:'nowrap' }}>{formatScreens(screenGroup.pieces, screenGroup.capacity)}</td>
  </> : !screenGroupedKeys.has(key) && <><td style={{ borderTop:'1px solid #f0f0f0' }} /><td style={{ borderTop:'1px solid #f0f0f0' }} /></>}
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</td>
  </tr>
