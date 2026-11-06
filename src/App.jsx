@@ -15843,9 +15843,9 @@ function buildDeliveryInvoicePrintCSS() {
     { label:'Matcha Supreme', aliases:['Matcha Supreme'] },
     { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
     { label:'Oreo Dream', aliases:['Oreo Dream'] },
+    { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
     { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
-    { label:'Almond Glitz', aliases:['Almond Glitz'] },
-    { label:'Lotus Cloud', aliases:['Lotus Cloud'] }
+    { label:'Almond Glitz', aliases:['Almond Glitz'] }
   ];
 
   function normalizeDonutVariantName(value) {
@@ -45965,11 +45965,17 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const smallDonutRows = forecastRows.filter(row => smallDonutKeys.has(forecastNameKey(row.variant_name)))
  const smallDonutPieces = smallDonutRows.reduce((sum, row) => sum + getForecastRowTotal(row), 0)
  const smallDonutLastRow = smallDonutRows[smallDonutRows.length - 1]
- // A screen holds 40 pieces. Merge each group's screen cell across its variant rows.
+ // Merge each group's screen cell across its adjacent variant rows.
  const screenGroups = [
-  {keys:['chocoballs'], label:'Choco Balls'},
-  {keys:['matchapops', 'taropops', 'strawberrypops'], label:'3 Pops combined'},
-  {keys:['bavarianpops', 'bavarianbites'], label:'Bavarian Pops + Bites'}
+  {keys:['chocoballs'], label:'Choco Balls', capacity:40},
+  {keys:['matchapops', 'taropops', 'strawberrypops'], label:'3 Pops combined', capacity:40},
+  {keys:['bavarianpops', 'bavarianbites'], label:'Bavarian Pops + Bites', capacity:40},
+  {keys:['mpuff'], label:'M-Puff', capacity:20},
+  {keys:['circlets', 'glazedcirclets', 'glazecirclet'], label:'Circlets', capacity:24},
+  {keys:['rings'], label:'Rings', capacity:15},
+  {keys:['shells', 'matchasupreme', 'bavarianmidnight', 'bavmidnight'], label:'Shells + Matcha Supreme + Bavarian Midnight', capacity:15},
+  {keys:['oreodream', 'lotuscloud'], label:'Oreo Dream + Lotus Cloud', capacity:15},
+  {keys:['fanfans'], label:'Fanfans', capacity:16}
  ]
  const screenGroupsByFirstKey = new Map()
  const screenGroupedKeys = new Set()
@@ -45977,7 +45983,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const groupRows = forecastRows.filter(row => group.keys.includes(forecastNameKey(row.variant_name)))
   const pieces = groupRows.reduce((sum, row) => sum + getForecastRowTotal(row), 0)
   if (groupRows.length) {
-   screenGroupsByFirstKey.set(forecastNameKey(groupRows[0].variant_name), {pieces, label:group.label, rowSpan:groupRows.length})
+   screenGroupsByFirstKey.set(forecastNameKey(groupRows[0].variant_name), {pieces, label:group.label, capacity:group.capacity, rowSpan:groupRows.length})
    groupRows.forEach(row => screenGroupedKeys.add(forecastNameKey(row.variant_name)))
   }
  })
@@ -46019,7 +46025,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const rowHtml = rows.map(row => {
    const key = forecastNameKey(row.variant_name)
    const screenGroup = screenGroupsByFirstKey.get(key)
-   const screenCell = screenGroup ? '<td class="screen" rowspan="'+screenGroup.rowSpan+'">'+esc(formatScreens(screenGroup.pieces))+'</td>' : screenGroupedKeys.has(key) ? '' : '<td></td>'
+   const screenCell = screenGroup ? '<td class="screen" rowspan="'+screenGroup.rowSpan+'">'+esc(formatScreens(screenGroup.pieces, screenGroup.capacity))+'</td>' : screenGroupedKeys.has(key) ? '' : '<td></td>'
    return '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td>'+screenCell+'</tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>POPS AND BITES TOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td><td></td></tr>' : '')
   }).join('')
 
@@ -46122,12 +46128,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {ONLINE_FORECAST_ENABLED && <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{onlineSummary?.orderCount || 0} accepted online order{onlineSummary?.orderCount===1?'':'s'}</span>}
  <span style={{ background:'#fff9e6', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{forecastRows.length} variant{forecastRows.length!==1?'s':''}</span>
  </div>
- <p style={{ fontSize:'11px', color:'#555', margin:'0 0 6px' }}>Each screen holds 40 pieces. The merged cells combine Matcha, Taro and Strawberry Pops; and Bavarian Pops and Bites. Choco Balls is separate.</p>
+ <p style={{ fontSize:'11px', color:'#555', margin:'0 0 6px' }}>Screen capacity varies by variant. Merged cells combine Pops, Bavarian Pops/Bites, Shells/Matcha Supreme/Bavarian Midnight, and Oreo Dream/Lotus Cloud. Other listed variants are calculated separately.</p>
  <div style={{ border:'1px solid #eee', borderRadius:'8px', overflowX:'auto' }}>
  <table style={{ borderCollapse:'collapse', tableLayout:'fixed', width:'100%', minWidth:'650px' }}>
  <colgroup><col style={{ width:'42%' }} /><col style={{ width:'19%' }} /><col style={{ width:'13%' }} /><col style={{ width:'7%' }} /><col style={{ width:'19%' }} /></colgroup>
  <thead><tr style={{ background:'#ca1b1b' }}>
- {['Variant','Total Pieces','Total Screens (40 pcs)','Dry Premix'].map((h,i)=><th key={h} colSpan={i===2?2:1} style={{ padding:'7px 12px', color:'white', fontSize:'11px', fontWeight:'bold', textAlign:i===0?'left':'right' }}>{h}</th>)}
+ {['Variant','Total Pieces','Total Screens (pcs per screen)','Dry Premix'].map((h,i)=><th key={h} colSpan={i===2?2:1} style={{ padding:'7px 12px', color:'white', fontSize:'11px', fontWeight:'bold', textAlign:i===0?'left':'right' }}>{h}</th>)}
  </tr></thead><tbody>
  {forecastRows.map((r,i)=>{
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
