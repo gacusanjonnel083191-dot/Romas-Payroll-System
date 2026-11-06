@@ -1,7 +1,8 @@
-export function formatProductionScreens(pieces) {
+export function formatProductionScreens(pieces, piecesPerScreen = 40) {
   const count = Number(pieces)
-  if (!Number.isSafeInteger(count) || count < 0) return '—'
-  const screens = Math.floor(count / 40)
-  const excess = count % 40
+  const capacity = Number(piecesPerScreen)
+  if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(capacity) || capacity <= 0) return '—'
+  const screens = Math.floor(count / capacity)
+  const excess = count % capacity
   return `${screens.toLocaleString('en-PH')} + ${excess} pcs`
 }
