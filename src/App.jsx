@@ -45975,7 +45975,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   {keys:['rings'], label:'Rings', capacity:15},
   {keys:['shells', 'matchasupreme', 'bavarianmidnight', 'bavmidnight'], label:'Shells + Matcha Supreme + Bavarian Midnight', capacity:15},
   {keys:['oreodream', 'lotuscloud'], label:'Oreo Dream + Lotus Cloud', capacity:15},
-  {keys:['fanfans'], label:'Fanfans', capacity:16}
+  {keys:['fanfans'], label:'Fanfans', capacity:16},
+  {keys:['almondglitz'], label:'Almond Glitz', capacity:11}
  ]
  const screenGroupsByFirstKey = new Map()
  const screenGroupedKeys = new Set()
