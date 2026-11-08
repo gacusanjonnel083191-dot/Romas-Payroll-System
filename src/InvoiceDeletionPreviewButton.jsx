@@ -35,7 +35,7 @@ function PreviewSection({ title, children }) {
  * Read-only preview based on the immutable snapshot captured by the invoice
  * deletion request procedure. The preview never calls a write operation.
  */
-export default function InvoiceDeletionPreviewButton({ request, disabled = false }) {
+export default function InvoiceDeletionPreviewButton({ request, disabled = false, sortItems }) {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     if (!open) return undefined
@@ -47,6 +47,8 @@ export default function InvoiceDeletionPreviewButton({ request, disabled = false
   const snapshot = request?.invoice_snapshot || {}
   const invoice = snapshot.invoice && typeof snapshot.invoice === 'object' ? snapshot.invoice : {}
   const items = Array.isArray(snapshot.items) ? snapshot.items : []
+  // Mirror the standard invoice viewer's approved product order without altering saved records.
+  const displayItems = typeof sortItems === 'function' ? sortItems(items) : items
   const linkedOrders = Array.isArray(snapshot.linked_orders) ? snapshot.linked_orders : []
   const movement = snapshot.movement || {}
   const available = !!Object.keys(invoice).length
@@ -91,7 +93,7 @@ export default function InvoiceDeletionPreviewButton({ request, disabled = false
               <thead><tr style={{ background:'#f4f4f4', textAlign:'left' }}>
                 {['Product / variant','Quantity','Unit price','Line total'].map(v=><th key={v} style={{ padding:9 }}>{v}</th>)}
               </tr></thead>
-              <tbody>{items.map((item,index)=>(
+              <tbody>{displayItems.map((item,index)=>(
                 <tr key={item.id || index} style={{ borderBottom:'1px solid #ececec' }}>
                   <td style={{ padding:9 }}>{asText(item.variant_name || item.product_name || item.name)}</td>
                   <td style={{ padding:9 }}>{asText(item.quantity)}</td>
@@ -101,7 +103,7 @@ export default function InvoiceDeletionPreviewButton({ request, disabled = false
               ))}</tbody>
             </table>
             <details style={{ marginTop:10 }}><summary style={{ cursor:'pointer', fontSize:12 }}>Show every recorded line-item field</summary>
-              {items.map((item,index)=><div key={item.id || index} style={{ marginTop:8 }}><strong style={{ fontSize:12 }}>Item {index+1}</strong><FieldGrid data={item} /></div>)}
+              {displayItems.map((item,index)=><div key={item.id || index} style={{ marginTop:8 }}><strong style={{ fontSize:12 }}>Item {index+1}</strong><FieldGrid data={item} /></div>)}
             </details>
           </div> : <p style={{ fontSize:12, color:'#777' }}>No line items recorded in the request snapshot.</p>}
         </PreviewSection>
