@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { invoiceDeletionFullPreview } from './vite.invoice-deletion-full-preview.js'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
@@ -53,5 +54,5 @@ export default defineConfig({
   define: {
     __APP_BUILD_ID__: JSON.stringify(buildId),
   },
-  plugins: [appUpdateMetadata(), customerOrderingAssets(), payrollMealBreakExemptionInvariant(), payrollAdjustmentDedupInvariant(), employeeOTFilingInvariant(), payrollOverbreakDeductionInvariant(), noScheduleGraceInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
+  plugins: [invoiceDeletionFullPreview(), appUpdateMetadata(), customerOrderingAssets(), payrollMealBreakExemptionInvariant(), payrollAdjustmentDedupInvariant(), employeeOTFilingInvariant(), payrollOverbreakDeductionInvariant(), noScheduleGraceInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
 })
