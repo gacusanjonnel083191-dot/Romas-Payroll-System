@@ -14,7 +14,7 @@ export function invoiceDeletionFullPreview() {
       if (!path.endsWith('/src/App.jsx')) return null
       const anchor = ">{rejecting ? 'Processing...' : 'Reject'}</button>"
       const occurrences = code.split(anchor).length - 1
-      if (occurrences !== 1 || !code.includes('function renderInvoiceDeletionApprovalCenter()')) {
+      if (occurrences !== 1 || !code.includes('function renderInvoiceDeletionApprovalCenter()') || !code.includes('function sortDeliveryInvoiceItems(')) {
         this.error('Invoice preview injection could not find the unique deletion approval action. No unverified UI changes were built.')
       }
       patched = true
