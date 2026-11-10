@@ -70,6 +70,7 @@ const EXACT_DATE_OT_OPENER = `async function openOTRequestForAttendanceDate(atte
  setShowOTRequest(true)
  setOtRequestType('overtime')
  setOtRequestReason('')
+ setOtRequestJustification('')
  setOtRequestReasonPreset('')
  setOtRequestMinutes('')
  setOtRequestDate(targetDate)
