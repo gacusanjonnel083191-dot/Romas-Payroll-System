@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run test:sil && npm run test:invoice-preview && node patch-invoice-romas-branding.cjs && node patch-hr-admin-business-access.cjs && node patch-supabase-egress-optimization.cjs && node patch-payroll-adjustment-deferral.cjs && node patch-coe-a4-pdf.cjs && node patch-coe-esign-workflow.cjs && node patch-coe-assigned-signatory.cjs && node patch-coe-address-compensation.cjs && vite build",
+    "build": "npm run test:ot-filing && npm run test:sil && npm run test:invoice-preview && node patch-invoice-romas-branding.cjs && node patch-hr-admin-business-access.cjs && node patch-supabase-egress-optimization.cjs && node patch-payroll-adjustment-deferral.cjs && node patch-coe-a4-pdf.cjs && node patch-coe-esign-workflow.cjs && node patch-coe-assigned-signatory.cjs && node patch-coe-address-compensation.cjs && vite build",
     "test:attendance": "node --test tests/attendance-undertime-policy.test.js",
     "test:egress": "node --test tests/supabase-egress-optimizer.test.cjs",
     "test:payroll-deferral": "node --test tests/payroll-adjustment-deferral.test.cjs",
@@ -15,7 +15,8 @@
     "test:coe-esign": "node --test tests/coe-esign-workflow-patch.test.cjs tests/coe-esign-workflow-migration.test.cjs",
     "test:coe-fields": "node --test tests/coe-address-compensation.test.cjs",
     "test:sil": "node --test tests/sil-manual-release.test.js",
-    "test:invoice-preview": "node --test tests/invoice-deletion-full-preview.test.mjs"
+    "test:invoice-preview": "node --test tests/invoice-deletion-full-preview.test.mjs",
+    "test:ot-filing": "node --test tests/overtime-reason-policy.test.js tests/employee-ot-filing-invariant.test.js tests/production-overtime-approval-invariant.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",
