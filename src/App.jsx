@@ -1,5 +1,5 @@
 import { validateOvertimeReasonFields, formatOvertimeReasonForStorage } from './overtimeReasonPolicy.js'
-import { calculateSpecialHolidayPay, isSpecialHolidayRestDay } from './specialHolidayPayrollPolicy.js'
+import { calculateSpecialHolidayPay, isSpecialHolidayRestDay, specialHolidayOvertimeMultiplier } from './specialHolidayPayrollPolicy.js'
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
 import { formatProductionScreens } from './productionScreenBreakdown.js'
 import { canViewEmployeeDeliverySummary } from './employeeDeliverySummaryPolicy.js'
@@ -31418,7 +31418,22 @@ async function computePayroll() {
       return sum + Math.min(Math.max(0, approvedMinutes), actualMinutes)
      }, 0)
    : 0
-  const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
+  const specialHolidayDateSet = new Set((holidayList || [])
+   .filter(h => String(h.holiday_type || '').toLowerCase() === 'special')
+   .map(h => String(h.holiday_date || '').slice(0,10)))
+  const overtimePay=overtimePayEligible
+   ? Object.entries(approvedOvertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
+      const actualMinutes = Math.max(0, safeNum(actualOvertimeCapacityByDate[dateKey], 0))
+      const eligibleMinutes = Math.min(Math.max(0, approvedMinutes), actualMinutes)
+      if (!eligibleMinutes) return sum
+      const isSpecialDay=specialHolidayDateSet.has(dateKey)
+      const schedule=specialHolidaySchedulesByKey[`${emp.id}|${dateKey}`] || null
+      const multiplier=isSpecialDay
+       ? specialHolidayOvertimeMultiplier(isSpecialHolidayRestDay(dateKey, schedule, annualWorkingDays))
+       : 1.25
+      return sum + eligibleMinutes * minuteRate * multiplier
+     }, 0)
+   : 0
 
   const lateMinutesInfo = Object.values(actualLatePenaltyByDate).reduce((sum, minutes) => sum + Math.max(0, safeNum(minutes, 0)), 0)
   const lateDeduction = undertimeDeductionApplicable ? lateMinutesInfo*minuteRate : 0
@@ -31465,7 +31480,7 @@ async function computePayroll() {
      || (leaves || []).some(leave => !isPaidLeaveRecord(leave) && getLeaveOverlapDays(leave, holidayDate, holidayDate)>0)
     )
     const treatment=calculateSpecialHolidayPay({
-     hasWorked, restDay, payrollBasis, dailyRate,
+     hasWorked, workedMinutes:safeNum(workedInfo?.actualMins,0), restDay, payrollBasis, dailyRate,
      paidLeaveCovered:isPaidLeaveCoveringDate(holidayGuardPaidLeaves, holidayDate),
      alreadyDeductedForAbsence
     })
