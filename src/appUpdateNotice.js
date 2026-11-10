@@ -1,5 +1,11 @@
 const CURRENT_BUILD_ID = __APP_BUILD_ID__
 const CHECK_INTERVAL_MS = 5 * 60 * 1000
+let pendingRelease = null
+
+const canViewReleaseDetails = () => {
+  const context = window.__ROMA_AI_BRIDGE__?.getContext?.()
+  return context?.adminMode === true && context?.isOwner === true
+}
 
 const escapeHtml = (value = '') => String(value)
   .replaceAll('&', '&amp;')
@@ -20,7 +26,8 @@ const formatReleaseDate = (value) => {
 }
 
 const showUpdateNotice = (release) => {
-  if (document.getElementById('romas-app-update-notice')) return
+  pendingRelease = release
+  document.getElementById('romas-app-update-notice')?.remove()
 
   const overlay = document.createElement('div')
   overlay.id = 'romas-app-update-notice'
@@ -30,13 +37,14 @@ const showUpdateNotice = (release) => {
   overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.48);display:flex;align-items:center;justify-content:center;padding:20px;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
 
   const releasedAt = formatReleaseDate(release.releasedAt)
+  const ownerView = canViewReleaseDetails()
   overlay.innerHTML = `
     <div style="width:min(460px,100%);max-height:85vh;overflow:auto;background:#fff;border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.28);padding:22px;color:#222">
       <div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#ca1b1b;margin-bottom:6px">Roma's Donuts</div>
       <h2 id="romas-update-title" style="margin:0 0 10px;font-size:22px;line-height:1.2">New Update Available</h2>
-      <div style="font-size:14px;font-weight:700;margin-bottom:6px">What's new</div>
+      ${ownerView ? `<div style="font-size:14px;font-weight:700;margin-bottom:6px">What's new</div>
       <div style="font-size:15px;line-height:1.55;background:#f7f7f7;border-radius:12px;padding:12px 14px;white-space:pre-wrap">${escapeHtml(release.summary || 'General improvements and fixes.')}</div>
-      ${releasedAt ? `<div style="font-size:12px;color:#777;margin-top:10px">Released ${escapeHtml(releasedAt)}</div>` : ''}
+      ${releasedAt ? `<div style="font-size:12px;color:#777;margin-top:10px">Released ${escapeHtml(releasedAt)}</div>` : ''}` : '<div style="font-size:15px;line-height:1.55">A new update is ready for Roma\'s Donuts.</div>'}
       <div style="font-size:13px;color:#666;margin-top:12px">Refresh the app to apply this update.</div>
       <button id="romas-apply-update" type="button" style="width:100%;margin-top:16px;border:0;border-radius:12px;background:#ca1b1b;color:#fff;font-size:15px;font-weight:800;padding:13px 16px;cursor:pointer">Update Now</button>
     </div>`
@@ -59,6 +67,9 @@ const checkForUpdate = async () => {
 
 export const installAppUpdateNotice = () => {
   if (typeof window === 'undefined') return
+  window.addEventListener('roma-ai-context-ready', () => {
+    if (pendingRelease) showUpdateNotice(pendingRelease)
+  })
   window.addEventListener('load', () => {
     checkForUpdate()
     window.setInterval(checkForUpdate, CHECK_INTERVAL_MS)
