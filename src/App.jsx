@@ -1,4 +1,5 @@
 import { validateOvertimeReasonFields, formatOvertimeReasonForStorage } from './overtimeReasonPolicy.js'
+import { calculateSpecialHolidayPay, isSpecialHolidayRestDay } from './specialHolidayPayrollPolicy.js'
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
 import { formatProductionScreens } from './productionScreenBreakdown.js'
 import { canViewEmployeeDeliverySummary } from './employeeDeliverySummaryPolicy.js'
@@ -2561,7 +2562,7 @@ function downloadEmployeePayslip(pay = {}) {
  } else {
   addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
  }
- if (printablePay.absenceDeduction > 0) addRow('Absence / Unpaid Leave Deduction', printablePay.absenceDeduction)
+ if (printablePay.absenceDeduction > 0) addRow('Absence / Unpaid Leave / Unworked Special Holiday Deduction', printablePay.absenceDeduction)
  addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
  addRow('SSS', printablePay.sssDeduction)
  addRow('Pag-IBIG', printablePay.pagibigDeduction)
@@ -7029,7 +7030,7 @@ function EmployeePortalPayslipBreakdown({ pay }) {
     {cashAdvanceItems.length > 0
      ? cashAdvanceItems.map(item => <SectionRow key={`ca-${item.id || item.date}`} label={getPayslipBreakdownLabel(item, 'Cash Advance')} amount={item.amount} note={getPayslipBreakdownNote(item)} />)
      : <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />}
-    {absenceDeduction > 0 && <SectionRow label="Absence / Unpaid Leave Deduction" amount={absenceDeduction} />}
+    {absenceDeduction > 0 && <SectionRow label="Absence / Unpaid Leave / Unworked Special Holiday Deduction" amount={absenceDeduction} />}
     <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
     <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
     <SectionRow label="SSS" amount={value('sss_deduction')} />
@@ -7105,7 +7106,7 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.undertimeDeduction)}</td></tr>`:''}
  ${(pay.excessBreakDeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Excess Break</td><td style="padding:3px 8px;text-align:right;">${php(pay.excessBreakDeduction)}</td></tr>`:''}
  ${cashAdvanceHtml}
- ${absenceDeduction>0?itemRow('Absence / Unpaid Leave Deduction', absenceDeduction):''}
+ ${absenceDeduction>0?itemRow('Absence / Unpaid Leave / Unworked Special Holiday Deduction', absenceDeduction):''}
  ${(pay.deferredCADeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;color:#f5a623;">CA not deducted this cutoff; remains in CA balance</td><td style="padding:3px 8px;text-align:right;color:#f5a623;">${php(pay.deferredCADeduction)}</td></tr>`:''}
  ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;">${php(pay.sssDeduction)}</td></tr>`:''}
  ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;">${php(pay.pagibigDeduction)}</td></tr>`:''}
@@ -16665,7 +16666,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
    addAmountRow('Excess Break Deduction', data.excessBreakDeduction)
    if (cashAdvanceItems.length > 0) cashAdvanceItems.forEach(item => addAmountRow(`${getPayslipBreakdownLabel(item, 'Cash Advance')}${getPayslipBreakdownNote(item) ? ` — ${getPayslipBreakdownNote(item)}` : ''}`, item.amount))
    else addAmountRow('Cash Advance Deduction', data.cashAdvanceDeduction)
-   addAmountRow('Absence / Unpaid Leave Deduction', data.absenceDeduction)
+   addAmountRow('Absence / Unpaid Leave / Unworked Special Holiday Deduction', data.absenceDeduction)
    addAmountRow('Deferred Cash Advance', data.deferredCADeduction)
    addAmountRow('SSS', data.sssDeduction)
    addAmountRow('Pag-IBIG', data.pagibigDeduction)
@@ -31169,6 +31170,23 @@ async function computePayroll() {
  const { data:holidayList, error:holidayError } = await supabase.from('holidays').select('*').gte('holiday_date', payrollStart).lte('holiday_date', payrollEnd)
  if (holidayError) throw holidayError
 
+ // Read the schedule for each special day so explicit rest days are not
+ // misclassified as salaried working days. Missing rows use the employee's
+ // configured annual-working-day basis as a safe Sunday/weekend fallback.
+ const specialHolidayDates = [...new Set((holidayList || [])
+  .filter(h => String(h.holiday_type || '').toLowerCase() === 'special')
+  .map(h => String(h.holiday_date || '').slice(0, 10)))]
+ const specialHolidaySchedulesByKey = {}
+ if (specialHolidayDates.length > 0) {
+  const { data:specialSchedules, error:scheduleError } = await supabase.from('daily_schedules')
+   .select('employee_id,schedule_date,shift_start,shift_end')
+   .in('schedule_date', specialHolidayDates)
+  if (scheduleError) throw scheduleError
+  for (const row of specialSchedules || []) {
+   specialHolidaySchedulesByKey[`${row.employee_id}|${String(row.schedule_date).slice(0, 10)}`] = row
+  }
+ }
+
  const results = []
  const startDay = Number(payrollStart.split('-')[2])
  const isFirstCutoff = startDay>=11&&startDay<=25
@@ -31424,13 +31442,12 @@ async function computePayroll() {
   // but receive ₱0 night differential premium.
   const nightDiffPay=nightDifferentialPayEligible ? nightDiffMinutes*minuteRate*0.10 : 0
 
-  // Holiday pay policy.
-  // Absence guard: no holiday pay/premium when employee is marked ABSENT
-  // on the day before the holiday, on the holiday, or on the day after the holiday.
-  // Paid leave on any guard date is treated as not absent.
-  // Regular holiday: eligible employee receives one daily-rate holiday pay;
-  // if they worked, basic pay already covers the worked day, so total becomes 200%.
-  // Special holiday: premium is added only when the employee worked the special holiday.
+  // DOLE special non-working holiday: absent/unworked employees receive no
+  // statutory holiday pay. The worked premium is mandatory for eligible
+  // rank-and-file staff and is not withheld for neighboring absences.
+  // A fixed salary includes its usual scheduled days; subtract an unworked
+  // special salaried day once, not again if absence/unpaid leave already did.
+  // Regular-holiday treatment and its separate absence guard remain unchanged.
   let holidayPay=0
   const holidayEligibilityNotes=[]
   for (const h of holidayList||[]) {
@@ -31438,6 +31455,27 @@ async function computePayroll() {
    const workedInfo=workDetailByDate[holidayDate]
    const holidayType = String(h.holiday_type || '').toLowerCase()
    const activeOnHoliday = !emp.hire_date || String(emp.hire_date).slice(0,10) <= holidayDate
+   if (holidayType === 'special') {
+    if (!activeOnHoliday) continue
+    const schedule=specialHolidaySchedulesByKey[`${emp.id}|${holidayDate}`] || null
+    const restDay=isSpecialHolidayRestDay(holidayDate, schedule, annualWorkingDays)
+    const hasWorked=!!workedInfo && safeNum(workedInfo.actualMins, 0) > 0
+    const alreadyDeductedForAbsence=absenceDeductionApplicable && (
+     (logs || []).some(log => String(log.attendance_date||'').slice(0,10)===holidayDate && log.status==='Absent')
+     || (leaves || []).some(leave => !isPaidLeaveRecord(leave) && getLeaveOverlapDays(leave, holidayDate, holidayDate)>0)
+    )
+    const treatment=calculateSpecialHolidayPay({
+     hasWorked, restDay, payrollBasis, dailyRate,
+     paidLeaveCovered:isPaidLeaveCoveringDate(holidayGuardPaidLeaves, holidayDate),
+     alreadyDeductedForAbsence
+    })
+    holidayPay += treatment.holidayPremium
+    absenceDeduction += treatment.unworkedFixedDayDeduction
+    if(treatment.unworkedFixedDayDeduction>0){
+     holidayEligibilityNotes.push(`${h.holiday_name || holidayDate}: fixed salary adjusted for unworked special non-working day (-${moneyRound(treatment.unworkedFixedDayDeduction)})`)
+    }
+    continue
+   }
    const absenceGuard = getHolidayAbsenceGuardFailure(holidayDate, guardAttendanceByDate, holidayGuardPaidLeaves)
    if (!absenceGuard.eligible) {
     holidayEligibilityNotes.push(`${h.holiday_name || holidayDate}: no holiday pay due to ABS on ${absenceGuard.absentDates.join(', ')}`)
@@ -31446,8 +31484,6 @@ async function computePayroll() {
    if (holidayType === 'regular' && activeOnHoliday && isHolidayPayEligible(emp, 'regular')) {
     const rate = workedInfo ? REGULAR_HOLIDAY_WORKED_PREMIUM_RATE : REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE
     holidayPay += dailyRate * rate
-   } else if (holidayType === 'special' && workedInfo && isHolidayPayEligible(emp, 'special')) {
-    holidayPay += dailyRate * SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE
    }
   }
 
@@ -39183,7 +39219,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'13px', color:'#555' }}>
  <strong style={{ color:'#ca1b1b' }}>Holiday Pay Rules (DOLE):</strong><br/>
  Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> only if not ABS before/on/after holiday<br/>
- Special Non-Working Worked: <strong>130%</strong> | Not Worked: <strong>No Pay (NWNP)</strong>
+ Special Non-Working Worked: <strong>130%</strong> (or <strong>150%</strong> on rest day) | Not Worked: <strong>No Pay (NWNP)</strong>; fixed-pay salaries deduct unworked scheduled special days. Approved paid leave and rest days are preserved.
  </div>
 
  {/* Auto-add Philippine Holidays */}
@@ -39947,7 +39983,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {getPayslipCashAdvanceItems(pay).length>0
  ? getPayslipCashAdvanceItems(pay).map(item=><div key={`admin-ca-${item.id || item.date}`} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'2px 0' }}><span>{getPayslipBreakdownLabel(item, 'Cash Advance')}{getPayslipBreakdownNote(item)&&<small style={{ display:'block', color:'#777' }}>{getPayslipBreakdownNote(item)}</small>}</span><span>{php(item.amount)}</span></div>)
  : pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
- {(pay.absenceDeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Absence / Unpaid Leave Deduction</span><span>{php(pay.absenceDeduction)}</span></div>}
+ {(pay.absenceDeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Absence / Unpaid Leave / Unworked Special Holiday Deduction</span><span>{php(pay.absenceDeduction)}</span></div>}
  {pay.lateDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Late Deduction ({pay.lateMinutes}min)</span><span>{php(pay.lateDeduction)}</span></div>}
  {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
  {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Automatic Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
@@ -40301,7 +40337,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {getPayslipCashAdvanceItems(pay).length>0
  ? getPayslipCashAdvanceItems(pay).map(item=><p key={`hist-ca-${item.id || item.date}`} style={{ margin:'2px 0', color:'#555' }}>{getPayslipBreakdownLabel(item,'CA')}: {php(item.amount)}</p>)
  : Number(pay.cash_advance_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>CA: PHP {Number(pay.cash_advance_deduction).toFixed(2)}</p>}
- {Number(pay.absence_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Absence / Unpaid Leave: {php(pay.absence_deduction)}</p>}
+ {Number(pay.absence_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Absence / Unpaid Leave / Unworked Special Holiday: {php(pay.absence_deduction)}</p>}
  {getPayslipAdjustmentItems(pay,'deduction').map(item=><p key={`hist-ded-${item.id || item.category}-${item.date}`} style={{ margin:'2px 0', color:'#555' }}>{getPayslipBreakdownLabel(item,'Deduction')}: {php(item.amount)}{getPayslipBreakdownNote(item)?` — ${getPayslipBreakdownNote(item)}`:''}</p>)}
  {getPayslipUnitemizedAdjustmentAmount(pay,'deduction')>0&&<p style={{ margin:'2px 0', color:'#7a5200' }}>Other Deduction: {php(getPayslipUnitemizedAdjustmentAmount(pay,'deduction'))}</p>}
  <p style={{ margin:'4px 0 0', fontWeight:'bold', color:'#ca1b1b' }}>Total: PHP {Number(pay.total_deductions||0).toFixed(2)}</p>
