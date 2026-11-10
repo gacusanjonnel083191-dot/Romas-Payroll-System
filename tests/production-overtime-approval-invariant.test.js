@@ -8,7 +8,7 @@ const migration=readFileSync(new URL('../supabase/migrations/20261102010000_prod
 test('overtime requires a specific free-text reason; unrelated meal-break form retained',()=>{
  assert.match(app,/Describe the actual work performed during overtime/)
  assert.match(app,/otRequestType==='overtime'\?\([\s\S]*?<textarea value=\{otRequestReason\}/)
- assert.match(app,/detailedOTReason\.length<15/)
+ assert.match(app,/validateOvertimeReasonFields\(detailedOTReason, otRequestJustification\)/)
  assert.match(app,/otRequestReasonPreset==='Others'/)
  assert.doesNotMatch(app.slice(app.indexOf('Locked OT:'),app.indexOf("{otRequestType === 'meal_break' && (",app.indexOf('Locked OT:'))),/Operational requirements \/ volume of work/)
  assert.match(migration,/OT_SPECIFIC_REASON_REQUIRED/)
