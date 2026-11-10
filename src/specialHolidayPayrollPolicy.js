@@ -17,21 +17,26 @@ export function isSpecialHolidayRestDay(date, schedule = null, annualWorkingDays
 
 export function calculateSpecialHolidayPay({
   hasWorked = false,
+  workedMinutes = 480,
   restDay = false,
   payrollBasis = 'daily',
   dailyRate = 0,
   paidLeaveCovered = false,
   alreadyDeductedForAbsence = false
 } = {}) {
-  const worked = hasWorked === true
+  const paidRegularMinutes = hasWorked === true ? Math.min(480, Math.max(0, Number(workedMinutes) || 0)) : 0
+  const worked = paidRegularMinutes > 0
+  const regularWorkFraction = paidRegularMinutes / 480
   const fixedSalary = ['monthly', 'semi_monthly'].includes(String(payrollBasis || '').toLowerCase())
   const rate = Math.max(0, Number(dailyRate) || 0)
   // Fixed monthly base excludes rest-day work when the day is already excluded
   // from annual working days; daily-pay base includes the completed workday.
   const holidayPremium = !worked ? 0
-    : restDay ? rate * (fixedSalary ? 1.5 : 0.5)
-      : rate * 0.3
+    : restDay ? rate * regularWorkFraction * (fixedSalary ? 1.5 : 0.5)
+      : rate * regularWorkFraction * 0.3
   const unworkedFixedDayDeduction = fixedSalary && !worked && !restDay && !paidLeaveCovered &&
     !alreadyDeductedForAbsence ? rate : 0
   return { holidayPremium, unworkedFixedDayDeduction }
 }
+
+export const specialHolidayOvertimeMultiplier = restDay => restDay ? 1.5 * 1.3 : 1.3 * 1.3
