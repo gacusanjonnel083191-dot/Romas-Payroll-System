@@ -27,6 +27,7 @@ test('DTR OT filing action is exact-date and state aware', () => {
  const transformed = enforceEmployeeOTFilingBehavior(fixture, '/repo/src/App.jsx')
  assert.match(transformed, /openOTRequestForAttendanceDate\(attendanceDate\)/)
  assert.match(transformed, /setOtRequestDate\(targetDate\)/)
+ assert.match(transformed, /setOtRequestJustification\(''\)/)
  assert.match(transformed, /refreshTimeAdjustmentPreview\(targetDate, 'overtime', '', ''\)/)
  assert.match(transformed, /FILE \/ CHECK OT/)
  assert.match(transformed, /OT FILED — Pending approval/)
