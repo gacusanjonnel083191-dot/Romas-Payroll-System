@@ -1,3 +1,4 @@
+import { validateOvertimeReasonFields, formatOvertimeReasonForStorage } from './overtimeReasonPolicy.js'
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
 import { formatProductionScreens } from './productionScreenBreakdown.js'
 import { canViewEmployeeDeliverySummary } from './employeeDeliverySummaryPolicy.js'
@@ -7266,6 +7267,7 @@ export default function App() {
  const [showOTRequest, setShowOTRequest] = useState(false)
  const [otRequestType, setOtRequestType] = useState('overtime')
  const [otRequestReason, setOtRequestReason] = useState('')
+ const [otRequestJustification, setOtRequestJustification] = useState('')
  const [otRequestMinutes, setOtRequestMinutes] = useState('')
  const [otRequestDate, setOtRequestDate] = useState('')
  const [otRequestFrom, setOtRequestFrom] = useState('')
@@ -20248,12 +20250,23 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   alert(msg)
  }
  async function toggleTimeAdjustmentFilingPanel() {
- const opening = !showOTRequest
+ await openEmployeeTimeAdjustmentFilingPanel('overtime')
+}
+
+async function openNoMealBreakFilingPanel() {
+ await openEmployeeTimeAdjustmentFilingPanel('meal_break')
+}
+
+async function openEmployeeTimeAdjustmentFilingPanel(requestType) {
+ const selectedType = requestType === 'meal_break' ? 'meal_break' : 'overtime'
+ const opening = !showOTRequest || otRequestType !== selectedType
  closeAllPanels()
  setShowOTRequest(opening)
  if (!opening) return
 
+ setOtRequestType(selectedType)
  setOtRequestReason('')
+ setOtRequestJustification('')
  setOtRequestReasonPreset('')
  setOtRequestMinutes('')
  setOtRequestFrom('')
@@ -20286,7 +20299,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  setOtRequestDate(defaultDate)
- await refreshTimeAdjustmentPreview(defaultDate, otRequestType, '', '')
+ await refreshTimeAdjustmentPreview(defaultDate, selectedType, '', '')
 }
 
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
@@ -20460,7 +20473,10 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  const detailedOTReason=String(otRequestReason||'').trim()
  if(!detailedOTReason||!otRequestDate){alert('Please select a date and enter a reason.');return}
- if(otRequestType==='overtime'&&(detailedOTReason.length<15||['operational requirements / volume of work','rush order / client deadline','staff shortage / manpower gap','management request','inventory or restocking task','others'].includes(detailedOTReason.toLowerCase()))){alert('Describe the actual overtime tasks performed and why the extra work was required (minimum 15 characters). Generic reasons are not accepted.');return}
+ if(otRequestType==='overtime'){
+  const reasonValidation=validateOvertimeReasonFields(detailedOTReason, otRequestJustification)
+  if(!reasonValidation.valid){alert(reasonValidation.message);return}
+ }
  if (otRequestType === 'meal_break' && !mealBreakAttestation) {
   alert('Please confirm that you actually worked continuously and did not take a meal break for this attendance shift.')
   return
@@ -20522,7 +20538,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   let employeeReason = otRequestReason
   if (otRequestType === 'overtime') {
    const window = preview?.rangeValidation?.window || preview?.validation?.overtimeWindow || {}
-   employeeReason = buildTimeAdjustmentEmployeeReason(otRequestReason, {
+   employeeReason = buildTimeAdjustmentEmployeeReason(formatOvertimeReasonForStorage(otRequestReason, otRequestJustification), {
     filedFrom:lockedOTFrom,
     filedTo:lockedOTTo,
     filedMinutes:exactMinutes,
@@ -20583,6 +20599,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
    : `No Meal Break review filed for ${canonicalAttendanceDate}. Payroll remains held until the continuous work is approved or the missing break punch is corrected.`
   )
   setOtRequestReason('')
+  setOtRequestJustification('')
   setOtRequestReasonPreset('')
   setOtRequestMinutes('')
   setOtRequestDate('')
@@ -50660,6 +50677,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
  {[
  { label:'File Overtime', icon:' ', action:toggleTimeAdjustmentFilingPanel, disabled:false },
+ { label:'No Meal Break Review', icon:' ', action:openNoMealBreakFilingPanel, disabled:false },
  { label:getEmployeeLeaveInfo(employee).buttonLabel, icon:' ', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
  { label:'Cash Advance', icon:' ', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
  ...(canViewEmployeeDeliverySummary(employee) ? [{ label:'Delivery Summary', icon:' ', action:()=>{ closeAllPanels(); setShowDeliverySummary(!showDeliverySummary) }, disabled:false }] : []),
@@ -50757,10 +50775,12 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {showOTRequest && (
  <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginBottom:'8px' }}>
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
- <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File Overtime</h3>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>{otRequestType === 'overtime' ? 'File Overtime' : 'File No Meal Break Review'}</h3>
+ {otRequestType === 'meal_break' && (
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
   <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 11, 2026, shifts up to five hours with no break punch have zero meal deduction. Longer unpunched shifts use the standard 60-minute meal deduction without blocking payroll. Approved No Meal Break exceptions still apply. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
+ )}
  <label style={lblS}>Attendance Date Being Filed:</label>
  <input
   type="date"
@@ -50777,25 +50797,6 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
   style={inputStyle}
  />
  <p style={{ margin:'-7px 0 10px', color:'#666', fontSize:'10px', lineHeight:1.45 }}>You may select any completed past attendance date. Future dates and dates without a valid Time In and Time Out are automatically blocked.</p>
- <label style={lblS}>Request Type:</label>
- <select
-  value={otRequestType}
-  onChange={async e=>{
-   const selectedType = e.target.value
-   setOtRequestType(selectedType)
-   setOtRequestReasonPreset('')
-   setOtRequestReason('')
-   setOtRequestFrom('')
-   setOtRequestTo('')
-   setMealBreakAttestation(false)
-   await refreshTimeAdjustmentPreview(otRequestDate, selectedType, '', '')
-  }}
-  style={inputStyle}
- >
-  <option value="overtime">Overtime</option>
-  {usesShortShiftMealPolicy(otRequestDate) && <option value="meal_break">No Meal Break Review</option>}
-
- </select>
  {otRequestType === 'overtime' ? (
  <>
  <div style={{ background:'#f0f7ff', border:'1px solid #b8d8ff', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
@@ -50829,8 +50830,10 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <label style={lblS}>{otRequestType==='overtime'?'Describe the actual work performed during overtime *':'Reason:'}</label>
  {otRequestType==='overtime'?(
   <>
-   <textarea value={otRequestReason} onChange={e=>setOtRequestReason(e.target.value)} maxLength={600} placeholder="Specify tasks completed, why they could not be finished in the regular shift, and relevant production or order details." style={{...inputStyle,minHeight:'96px',resize:'vertical'}} />
-   <p style={{fontSize:'11px',color:'#555',margin:'0 0 10px'}}>Minimum 15 characters. Production OT must be reviewed by a supervisor and finally approved by the owner before payroll.</p>
+   <textarea value={otRequestReason} onChange={e=>setOtRequestReason(e.target.value)} maxLength={600} placeholder="Describe the specific tasks and products/orders handled (e.g., packed 85 donut boxes for morning delivery)." style={{...inputStyle,minHeight:'80px',resize:'vertical'}} />
+   <label style={lblS}>Why was overtime necessary? *</label>
+   <textarea value={otRequestJustification} onChange={e=>setOtRequestJustification(e.target.value)} maxLength={600} placeholder="Explain the specific deadline, unexpected issue, or operational need that could not wait until the next shift." style={{...inputStyle,minHeight:'80px',resize:'vertical'}} />
+   <p style={{fontSize:'11px',color:'#555',margin:'0 0 10px'}}>Complete both explanations (at least 15 characters and 3 words each). Generic or identical reasons are rejected. Production OT still requires supervisor verification and owner final approval.</p>
   </>
  ):(
   <>
