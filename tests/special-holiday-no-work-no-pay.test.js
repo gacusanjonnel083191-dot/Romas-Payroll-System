@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { calculateSpecialHolidayPay, isSpecialHolidayRestDay } from '../src/specialHolidayPayrollPolicy.js'
+import { calculateSpecialHolidayPay, isSpecialHolidayRestDay, specialHolidayOvertimeMultiplier } from '../src/specialHolidayPayrollPolicy.js'
 
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
 const T = (options) => calculateSpecialHolidayPay({ dailyRate: 700, ...options })
@@ -9,6 +9,7 @@ const T = (options) => calculateSpecialHolidayPay({ dailyRate: 700, ...options }
 test('daily paid special holiday: no work no pay, worked 130%', () => {
   assert.deepEqual(T({ payrollBasis:'daily', hasWorked:false }), {holidayPremium:0,unworkedFixedDayDeduction:0})
   assert.deepEqual(T({ payrollBasis:'daily', hasWorked:true }), {holidayPremium:210,unworkedFixedDayDeduction:0})
+  assert.equal(T({payrollBasis:'daily',hasWorked:true,workedMinutes:240}).holidayPremium,105)
 })
 
 test('worked special holiday on rest day pays statutory 150%', () => {
@@ -53,4 +54,12 @@ test('production computation keeps regular holiday absence guard separate from s
 test('historical payroll remains untouched; only future payroll computations use the policy', () => {
   assert.match(app, /\.from\('payroll_records'\)\.insert\(rows\)/)
   assert.doesNotMatch(app, /\.from\('payroll_records'\)\.update\(\{holiday_pay:/)
+})
+
+test('approved special-day overtime uses 169% / rest-day 195%, ordinary OT stays 125%', () => {
+  assert.ok(Math.abs(specialHolidayOvertimeMultiplier(false) - 1.69) < 0.0001)
+  assert.ok(Math.abs(specialHolidayOvertimeMultiplier(true) - 1.95) < 0.0001)
+  assert.match(app, /specialHolidayDateSet\.has\(dateKey\)/)
+  assert.match(app, /specialHolidayOvertimeMultiplier\(isSpecialHolidayRestDay\(dateKey, schedule, annualWorkingDays\)\)/)
+  assert.match(app, /: 1\.25/)
 })
