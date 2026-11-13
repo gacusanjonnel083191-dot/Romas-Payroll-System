@@ -2,6 +2,7 @@ import { validateOvertimeReasonFields, formatOvertimeReasonForStorage } from './
 import { calculateSpecialHolidayPay, isSpecialHolidayRestDay, specialHolidayOvertimeMultiplier } from './specialHolidayPayrollPolicy.js'
 import { comparePayrollSnapshots } from './payrollComparison.js'
 import { reconcilePayrollExport } from './payrollExportReconciliation.js'
+import { payrollReviewRows, REVIEW_FIELDS } from './payrollReviewExport.js'
 import { buildDeterministicAdjustmentSnapshot, sumAdjustmentCents } from './payrollAdjustmentIntegrity.js'
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
 import { formatProductionScreens } from './productionScreenBreakdown.js'
@@ -29115,7 +29116,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    .eq('payroll_start',start).eq('payroll_end',end).limit(5000)
   if (error) { showToast('Bank export blocked: saved payroll could not be verified: '+error.message,'red'); return null }
   if (!(savedRows||[]).length || savedRows.some(row=>!isReleasedPayrollRecord(row))) {
-   showToast('Bank export blocked: all saved payslips must be released first.','red')
+   showToast('RCBC payment export requires RELEASE FINAL PAYROLL after review. Your payslips are not released. Use EXPORT REVIEW EXCEL for checking saved amounts.','red')
    return null
   }
   try { return reconcilePayrollExport(displayedRows,savedRows,includedRows) }
@@ -30982,7 +30983,39 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  showToast(`Downloaded ${records.length} payslip${records.length === 1 ? '' : 's'} as a Word file.`)
  }
 
- async function exportPayrollToExcel(records, start, end) {
+ async function exportPayrollReviewExcel(records, start, end) {
+  if (!requireOwnerOrPayrollAction('export internal payroll review')) return
+  if (!records.length) { showToast('Load saved payroll before exporting a review.', 'red'); return }
+  try {
+    const fields = ['employee_id','employee_code','employee_name','payroll_status',
+      'basic_pay','birthday_pay','overtime_pay','night_diff_pay','holiday_pay',
+      'other_earnings','total_earnings','late_deduction','undertime_deduction',
+      'cash_advance_deduction','sss_deduction','pagibig_deduction','philhealth_deduction',
+      'other_deductions','total_deductions','net_pay']
+    const {data:saved,error} = await supabase.from('payroll_records')
+      .select(fields.join(',')).eq('payroll_start',start).eq('payroll_end',end).limit(5000)
+    if(error)throw error
+    const report=payrollReviewRows(records,saved||[],start,end)
+    const XLSX=await ensureXLSXLibrary()
+    const sheet=XLSX.utils.aoa_to_sheet(report.rows)
+    for(let row=report.firstRow;row<=report.lastRow;row++){
+      for(let col=3;col<report.rows[report.headerRowIndex].length;col++){
+        const address=XLSX.utils.encode_cell({r:row,c:col})
+        if(sheet[address])sheet[address].z='#,##0.00'
+      }
+    }
+    sheet['!cols']=[{wch:18},{wch:35},{wch:18},...REVIEW_FIELDS.map(()=>({wch:20}))]
+    const workbook=XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook,sheet,'Internal Review')
+    XLSX.writeFile(workbook,'Payroll_INTERNAL_REVIEW_NOT_FOR_BANK_'+start+'_to_'+end+'.xlsx',{bookType:'xlsx',compression:true})
+    showToast('Internal payroll review Excel exported for '+report.count+' employees. Not a bank payment file; RCBC export requires final release.','green')
+  } catch(error) {
+    console.error('Internal payroll review export failed:',error)
+    showToast('Internal review Excel not created: '+(error?.message||error),'red')
+  }
+}
+
+async function exportPayrollToExcel(records, start, end) {
  if (!records.length) { showToast('No records to export.', 'red'); return }
 
  // RCBC credits only positive amounts. Zero- and negative-net-pay payroll rows
@@ -39980,10 +40013,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <button style={{ background:'#b45309', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }} onClick={()=>reopenReleasedPayroll(payrollStart, payrollEnd)}> REOPEN RELEASED PAYROLL</button>
  )}
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
- <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToExcel(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT EXCEL</button>
+ <button style={{ background:'#64748b', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }} onClick={()=>exportPayrollReviewExcel(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT REVIEW EXCEL</button>
+ <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToExcel(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT RCBC PAYMENT EXCEL</button>
  <button style={{ background:'#1a1a2e', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
+ {payrollResults.length>0 && <p style={{fontSize:'12px',color:'#8a6200',margin:'-8px 0 12px'}}>EXPORT REVIEW EXCEL saves a reconciled internal report without bank details. RCBC PAYMENT EXCEL requires released payroll.</p>}
  {(payrollReadinessLoading || payrollReadiness) && (
  <div style={{ background:payrollReadiness?.ready?'#f0fff4':'#fff8e1', border:`2px solid ${payrollReadiness?.ready?'#2d8a4e':'#f5a623'}`, borderRadius:'14px', padding:'16px', marginBottom:'18px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
@@ -40381,9 +40416,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  onClick={()=>printHistoryPayslips(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
  PRINT ALL PAYSLIPS
  </button>
+ <button style={{...btnGray, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>exportPayrollReviewExcel(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>EXPORT REVIEW EXCEL</button>
  <button style={{...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }}
  onClick={()=>exportPayrollToExcel(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
- EXPORT TO EXCEL
+ EXPORT RCBC PAYMENT EXCEL
  </button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
  onClick={()=>handleManualPayrollExpensePost(selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
