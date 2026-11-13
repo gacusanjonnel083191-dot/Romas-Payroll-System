@@ -22,7 +22,8 @@ export function calculateSpecialHolidayPay({
   payrollBasis = 'daily',
   dailyRate = 0,
   paidLeaveCovered = false,
-  alreadyDeductedForAbsence = false
+  alreadyDeductedForAbsence = false,
+  deductUnworkedFixedDay = true
 } = {}) {
   const paidRegularMinutes = hasWorked === true ? Math.min(480, Math.max(0, Number(workedMinutes) || 0)) : 0
   const worked = paidRegularMinutes > 0
@@ -34,7 +35,7 @@ export function calculateSpecialHolidayPay({
   const holidayPremium = !worked ? 0
     : restDay ? rate * regularWorkFraction * (fixedSalary ? 1.5 : 0.5)
       : rate * regularWorkFraction * 0.3
-  const unworkedFixedDayDeduction = fixedSalary && !worked && !restDay && !paidLeaveCovered &&
+  const unworkedFixedDayDeduction = fixedSalary && deductUnworkedFixedDay && !worked && !restDay && !paidLeaveCovered &&
     !alreadyDeductedForAbsence ? rate : 0
   return { holidayPremium, unworkedFixedDayDeduction }
 }

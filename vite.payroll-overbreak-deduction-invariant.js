@@ -49,11 +49,14 @@ export function enforcePayrollOverbreakDeduction(source, id = '') {
     'rounded overbreak deduction'
   )
 
+  const deductionPrefix = transformed.includes('  const mandatoryNonCADeductions=moneyRound(')
+    ? '  const mandatoryNonCADeductions=moneyRound('
+    : '  const nonCADeductions=moneyRound('
   transformed = replaceExactlyOnce(
     transformed,
-    "  const mandatoryNonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+absenceDeductionRounded)",
-    "  const mandatoryNonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+excessBreakDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+absenceDeductionRounded)",
-    'mandatory deduction total'
+    deductionPrefix + 'lateDeductionRounded+undertimeDeductionRounded+',
+    deductionPrefix + 'lateDeductionRounded+undertimeDeductionRounded+excessBreakDeductionRounded+',
+    'deduction total'
   )
 
   transformed = replaceExactlyOnce(
@@ -91,12 +94,14 @@ export function enforcePayrollOverbreakDeduction(source, id = '') {
     'saved payroll summary total'
   )
 
-  transformed = replaceExactlyOnce(
-    transformed,
-    "totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalCA:",
-    "totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalExcessBreakDeduction:results.reduce((a,p)=>a+(p.excessBreakDeduction||0),0), totalCA:",
-    'computed payroll summary total'
-  )
+  if (transformed.includes("totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalCA:")) {
+    transformed = replaceExactlyOnce(
+      transformed,
+      "totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalCA:",
+      "totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalExcessBreakDeduction:results.reduce((a,p)=>a+(p.excessBreakDeduction||0),0), totalCA:",
+      'computed payroll summary total'
+    )
+  }
 
   transformed = replaceExactlyOnce(
     transformed,

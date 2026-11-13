@@ -1,5 +1,8 @@
 import { validateOvertimeReasonFields, formatOvertimeReasonForStorage } from './overtimeReasonPolicy.js'
 import { calculateSpecialHolidayPay, isSpecialHolidayRestDay, specialHolidayOvertimeMultiplier } from './specialHolidayPayrollPolicy.js'
+import { comparePayrollSnapshots } from './payrollComparison.js'
+import { reconcilePayrollExport } from './payrollExportReconciliation.js'
+import { buildDeterministicAdjustmentSnapshot, sumAdjustmentCents } from './payrollAdjustmentIntegrity.js'
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
 import { formatProductionScreens } from './productionScreenBreakdown.js'
 import { canViewEmployeeDeliverySummary } from './employeeDeliverySummaryPolicy.js'
@@ -2315,15 +2318,7 @@ function getPayslipBreakdownNote(item = {}) {
 }
 
 function buildPayrollAdjustmentSnapshot(rows = []) {
- return (rows || []).map(row => ({
-  id:row?.id || '',
-  type:String(row?.adjustment_type || '').trim().toLowerCase() === 'addition' ? 'addition' : 'deduction',
-  category:String(row?.category || '').trim() || (String(row?.adjustment_type || '').trim().toLowerCase() === 'addition' ? 'Payroll Addition' : 'Payroll Deduction'),
-  amount:moneyRound(Math.max(0, safeNum(row?.amount, 0))),
-  date:String(row?.adjustment_date || '').slice(0, 10),
-  notes:String(row?.notes || '').trim(),
-  source:'payroll_adjustments'
- })).filter(item => item.amount > 0)
+ return buildDeterministicAdjustmentSnapshot(rows || [])
 }
 
 function getCashAdvancePayslipReason(notes = '') {
@@ -8426,6 +8421,7 @@ export default function App() {
  const [payrollResults, setPayrollResults] = useState([])
  const [payrollSummary, setPayrollSummary] = useState(null)
  const [payrollReadiness, setPayrollReadiness] = useState(null)
+ const [payrollComparison, setPayrollComparison] = useState(null)
  const [payrollReadinessLoading, setPayrollReadinessLoading] = useState(false)
  const [payrollComputing, setPayrollComputing] = useState(false)
  const [payslipSmsSending, setPayslipSmsSending] = useState(false)
@@ -22043,6 +22039,15 @@ if (role === 'owner') return true
  }).length
  if (pendingCount > 0 && !window.confirm(`${pendingCount} payslip(s) are still pending employee acknowledgement. Continue final payroll release?`)) return
 
+ const expensePreflight = await payrollExpenseAlreadyPosted(start,end)
+ if (expensePreflight.error || expensePreflight.duplicate || expensePreflight.exists) {
+  const reason = expensePreflight.error || (expensePreflight.duplicate
+   ? `${expensePreflight.count} payroll expenses already exist for this period.`
+   : 'A payroll expense already exists for this period.')
+  showToast(`Release blocked: ${reason} Review the expense ledger before releasing payroll.`, 'red')
+  return
+ }
+
  const caDeductionResult = await applyCashAdvanceDeductionsForPayrollPeriod(start, end)
  if (caDeductionResult.error) {
   showToast('Payroll release was not confirmed: ' + caDeductionResult.error, 'red')
@@ -22099,10 +22104,11 @@ if (role === 'owner') return true
 .select('id, amount, status, expense_date, description')
 .eq('category', 'Payroll Expense')
 .ilike('description', `%${tag}%`)
-.limit(1)
+.limit(3)
 
  if (error) return { exists:false, error:error.message }
- return { exists:(data || []).length > 0, record:(data || [])[0] || null }
+ return { exists:(data || []).length > 0, duplicate:(data || []).length > 1,
+  count:(data || []).length, record:(data || [])[0] || null }
  }
 
  async function payrollPeriodHasReleasedRecords(start, end) {
@@ -22161,20 +22167,20 @@ if (role === 'owner') return true
  async function postPayrollToExpenses(start, end, options = {}) {
  if (!start ||!end) return { posted:false, error:'Missing payroll period.' }
 
+ const summary = await getPayrollExpenseSummary(start, end)
+ if (summary.error) {
+  if (!options.silent) showToast(summary.error, 'red')
+  return { posted:false, error:summary.error }
+ }
+ const amount = safeNum(summary.operatingPayrollExpense, 0)
  const existing = await payrollExpenseAlreadyPosted(start, end)
+ if (existing.error) return { posted:false, error:`Payroll expense duplicate check failed: ${existing.error}` }
+ if (existing.duplicate) return { posted:false, error:`${existing.count} payroll expenses already exist for this period; review them before posting again.` }
  if (existing.exists) {
+ if (moneyRound(existing.record?.amount)!==moneyRound(amount)) return { posted:false, error:`Existing payroll expense ${php(existing.record?.amount)} differs from calculated ${php(amount)}.` }
  if (!options.silent) showToast('Payroll expense is already posted for this period.', 'red')
  return { posted:false, existing:true, record:existing.record, amount:safeNum(existing.record?.amount,0) }
  }
- if (existing.error &&!options.silent) console.warn('Payroll expense duplicate check:', existing.error)
-
- const summary = await getPayrollExpenseSummary(start, end)
- if (summary.error) {
- if (!options.silent) showToast(summary.error, 'red')
- return { posted:false, error:summary.error }
- }
-
- const amount = safeNum(summary.operatingPayrollExpense, 0)
  if (amount <= 0) {
  const msg = 'Operating payroll expense is zero. Production payroll is still counted under COGS after payroll release.'
  if (!options.silent) showToast(msg, 'red')
@@ -22184,6 +22190,8 @@ if (role === 'owner') return true
  const payload = {
  expense_date: end,
  category: 'Payroll Expense',
+ payroll_start:start,
+ payroll_end:end,
  amount,
  description: getPayrollExpenseDescription(start, end, summary),
  status: 'approved',
@@ -28428,6 +28436,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if ((readiness.attendanceExceptions || []).length > 0) parts.push(`${readiness.attendanceExceptions.length} unresolved attendance exception(s)`)
   if ((readiness.missingEmployees || []).length > 0) parts.push(`${readiness.missingEmployees.length} active employee(s) missing a payroll row`)
   if ((readiness.duplicateEmployees || []).length > 0) parts.push(`${readiness.duplicateEmployees.length} duplicate employee payroll row(s)`)
+  if ((readiness.financialExceptions || []).length > 0) parts.push(`${readiness.financialExceptions.length} financial discrepancy(s): ${readiness.financialExceptions.slice(0,2).map(item=>item.reason).join(' | ')}`)
+  if (readiness.comparisonReviewRequired) parts.push('recomputed payroll comparison requires owner acknowledgement')
+  if (readiness.error) parts.push(readiness.error)
   return parts.length > 0 ? `Payroll is not ready: ${parts.join(', ')}.` : 'Payroll is ready.'
  }
 
@@ -28468,11 +28479,30 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
    const { data:payrollRows, error:payrollError } = await supabase
     .from('payroll_records')
-    .select('id,employee_id,employee_code,employee_name,payroll_approved,approved_at,employee_acknowledgement,payroll_status')
+    .select('id,employee_id,employee_code,employee_name,payroll_approved,approved_at,employee_acknowledgement,payroll_status,birthday_pay,total_earnings,total_deductions,net_pay')
     .eq('payroll_start', start)
     .eq('payroll_end', end)
     .limit(5000)
    if (payrollError) throw payrollError
+
+   const { data:eligibilityRows, error:eligibilityError } = employeeIds.length > 0
+    ? await supabase.from('employees').select('id,birthday_pay_eligible').in('id',employeeIds)
+    : { data:[], error:null }
+   if (eligibilityError) throw eligibilityError
+   const eligibilityById=new Map((eligibilityRows||[]).map(row=>[String(row.id),row.birthday_pay_eligible]))
+   if (eligibilityById.size!==employeeIds.length || [...eligibilityById.values()].some(value=>typeof value!=='boolean')) throw new Error('Payroll eligibility could not be verified for every active employee.')
+   const { data:comparisonStatus, error:comparisonError } = await supabase.rpc('payroll_comparison_status',{p_start:start,p_end:end})
+   if (comparisonError) throw new Error('Payroll comparison review status is unavailable: '+comparisonError.message)
+   const comparisonReviewRequired=comparisonStatus?.has_snapshot===true && comparisonStatus?.reviewed!==true
+   const financialExceptions=[]
+   for (const row of payrollRows||[]) {
+    const employeeName=row.employee_name||row.employee_code||row.employee_id
+    const earnings=Math.round(safeNum(row.total_earnings,0)*100)
+    const deductions=Math.round(safeNum(row.total_deductions,0)*100)
+    const net=Math.round(safeNum(row.net_pay,0)*100)
+    if (earnings-deductions!==net) financialExceptions.push({employeeId:row.employee_id,employeeName,field:'net_pay',amount:(earnings-deductions-net)/100,reason:`${employeeName}: earnings less deductions differ from net pay by ${php((earnings-deductions-net)/100)}`})
+    if (eligibilityById.get(String(row.employee_id))===false && safeNum(row.birthday_pay,0)>0) financialExceptions.push({employeeId:row.employee_id,employeeName,field:'birthday_pay',amount:safeNum(row.birthday_pay,0),reason:`${employeeName}: ineligible birthday pay ${php(row.birthday_pay)}`})
+   }
 
    const logsByEmployee = {}
    ;(attendanceRows || []).forEach(log => {
@@ -28523,7 +28553,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     heldEmployeeIds,
     missingEmployees,
     duplicateEmployees,
-    ready:attendanceExceptions.length === 0 && missingEmployees.length === 0 && duplicateEmployees.length === 0 && (payrollRows || []).length > 0
+    financialExceptions,
+    comparisonReviewRequired,
+    comparisonBatchId:comparisonStatus?.batch_id||null,
+    ready:attendanceExceptions.length === 0 && missingEmployees.length === 0 && duplicateEmployees.length === 0 && financialExceptions.length === 0 && !comparisonReviewRequired && (payrollRows || []).length > 0
    }
    if (updateState) setPayrollReadiness(readiness)
    if (!options.silent) showToast(getPayrollReadinessBlockMessage(readiness), readiness.ready ? 'green':'red')
@@ -28548,6 +28581,15 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    sourceEnd:payrollEnd,
    dayDetails:[{ date:issue.attendanceDate, undertimeMinutes:1 }]
   }, issue.attendanceDate)
+ }
+
+ async function checkPayrollUndoSnapshotStorage() {
+  const { error } = await supabase.from('payroll_draft_undo_snapshots').select('id').limit(1)
+  if (error) {
+   showToast('Undo blocked: the protected draft snapshot store is unavailable. The payroll draft was not changed.', 'red')
+   return false
+  }
+  return true
  }
 
  async function rebuildPayrollDraftAfterAttendanceCorrections() {
@@ -28577,6 +28619,11 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    showToast('Rebuild blocked: this payroll has already been released.', 'red')
    return
   }
+  if ((records || []).some(row => row.payroll_approved || row.approved_at)) {
+   showToast('Rebuild blocked: approved payroll must not be deleted.', 'red')
+   return
+  }
+  if (!await checkPayrollUndoSnapshotStorage()) return
 
   const reviewSentCount = (records || []).filter(isPayrollSentForEmployeeReview).length
   const warning = [
@@ -28587,26 +28634,17 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   ].filter(Boolean).join('\n')
   if (!window.confirm(warning)) return
 
-  try {
-   await supabase.from('payslip_disputes')
-    .update({ status:'voided', admin_reason:`Payroll draft rebuilt after attendance correction by ${currentAdminLabel}`, reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString() })
-    .eq('payroll_start', payrollStart)
-    .eq('payroll_end', payrollEnd)
-    .neq('status','resolved')
-  } catch(error) { console.warn('Dispute voiding skipped during rebuild:', error) }
-
-  const { error:deleteError } = await supabase.from('payroll_records')
-   .delete()
-   .eq('payroll_start', payrollStart)
-   .eq('payroll_end', payrollEnd)
-  if (deleteError) { showToast('Rebuild failed while removing the old draft: ' + deleteError.message, 'red'); return }
-  try { await supabase.from('payroll_periods').delete().eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd) } catch(error) {}
+  const { error:undoError } = await supabase.rpc('undo_payroll_draft', {
+   p_start:payrollStart, p_end:payrollEnd, p_expected_count:(records || []).length
+  })
+  if (undoError) { showToast('Rebuild failed; the existing draft was preserved: ' + undoError.message, 'red'); return }
 
   setPayrollResults([])
   setPayrollSummary(null)
   setPayrollReadiness(null)
   setPayrollApproved(false)
   await logAudit('PAYROLL DRAFT REBUILD STARTED', currentAdminLabel, 'Payroll', `Period: ${payrollStart} to ${payrollEnd} | Corrected missing employees: ${readiness.missingEmployees.length}`)
+  setPayrollComparison(null)
   await computePayroll()
  }
 
@@ -28673,6 +28711,47 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
  }
 
+ async function loadPayrollComparison(start, end, currentRecords) {
+  const { data:latest, error:latestError } = await supabase
+   .from('payroll_draft_undo_snapshots')
+   .select('batch_id,deleted_at')
+   .eq('payroll_start',start).eq('payroll_end',end)
+   .order('deleted_at',{ ascending:false }).limit(1)
+  if (latestError) {
+   setPayrollComparison({ error:'Draft snapshot comparison is unavailable: '+latestError.message })
+   return
+  }
+  if (!latest?.length) { setPayrollComparison(null); return }
+  const { data:previous, error:previousError } = await supabase
+   .from('payroll_draft_undo_snapshots')
+   .select('batch_id,deleted_at,payroll_record')
+   .eq('batch_id',latest[0].batch_id).limit(5000)
+  if (previousError) {
+   setPayrollComparison({ error:'Previous draft could not be loaded: '+previousError.message })
+   return
+  }
+  try {
+   setPayrollComparison({ ...comparePayrollSnapshots(previous||[],currentRecords||[]),
+    batchId:latest[0].batch_id, deletedAt:latest[0].deleted_at })
+  } catch(error) {
+   setPayrollComparison({ error:'Draft comparison failed: '+(error?.message||error) })
+  }
+ }
+
+ async function acknowledgePayrollComparison() {
+  if (!requireOwnerAction('acknowledge the recomputed payroll comparison')) return
+  const batchId=payrollComparison?.batchId
+  if (!batchId || payrollComparison?.error || payrollReadiness?.comparisonBatchId!==batchId) {
+   showToast('Load the latest saved payroll comparison before acknowledging it.', 'red'); return
+  }
+  const { error }=await supabase.rpc('acknowledge_payroll_comparison',{
+   p_start:payrollStart,p_end:payrollEnd,p_batch_id:batchId
+  })
+  if (error) { showToast('Comparison acknowledgement failed: '+error.message,'red'); return }
+  await inspectPayrollReadiness(payrollStart,payrollEnd,{silent:true})
+  showToast('Saved payroll comparison acknowledged.','green')
+ }
+
  async function loadSavedPayrollForPeriod(start = payrollStart, end = payrollEnd, options = {}) {
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return [] }
  if (parseLocalDate(end) < parseLocalDate(start)) { showToast('Payroll end date must be after start date.', 'red'); return [] }
@@ -28690,6 +28769,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (!records || records.length === 0) {
    setPayrollResults([])
    setPayrollSummary(null)
+   setPayrollComparison(null)
    if (!options.silent) showToast('No saved payroll found for this exact period. Check the From/To dates or open Payroll History.', 'red')
    return []
   }
@@ -28716,6 +28796,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   setPayrollResults(results)
   setPayrollSummary(buildPayrollSummaryFromResults(results))
   setPayrollApproved(results.some(r=>r.payrollApproved || !!r.approvedAt))
+  await loadPayrollComparison(start,end,records)
   await inspectPayrollReadiness(start, end, { silent:true })
 
   if (!options.silent) {
@@ -28726,6 +28807,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   console.error('Saved payroll load failed:', err)
   setPayrollResults([])
   setPayrollSummary(null)
+  setPayrollComparison(null)
   setPayrollReadiness(null)
   showToast('Failed to load saved payroll: ' + (err?.message || err), 'red')
   return []
@@ -29027,6 +29109,19 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return positiveRows.filter(row => normalizePayrollBankName(row.bankName) === normalizedBank)
  }
 
+ async function verifyPayrollExportAgainstSaved(displayedRows, includedRows, start, end) {
+  const { data:savedRows, error } = await supabase.from('payroll_records')
+   .select('employee_id,employee_code,net_pay,total_earnings,total_deductions,payroll_approved,payroll_released,approved_at,payroll_status')
+   .eq('payroll_start',start).eq('payroll_end',end).limit(5000)
+  if (error) { showToast('Bank export blocked: saved payroll could not be verified: '+error.message,'red'); return null }
+  if (!(savedRows||[]).length || savedRows.some(row=>!isReleasedPayrollRecord(row))) {
+   showToast('Bank export blocked: all saved payslips must be released first.','red')
+   return null
+  }
+  try { return reconcilePayrollExport(displayedRows,savedRows,includedRows) }
+  catch(error) { showToast('Bank export blocked: '+(error?.message||error),'red'); return null }
+ }
+
  async function downloadPayrollBankCSV(bank = '') {
   const normalizedBank = normalizePayrollBankName(bank)
   if (normalizedBank === 'RCBC') {
@@ -29068,6 +29163,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    showToast(`${normalizedBank} download blocked: duplicate account number detected for ${[...duplicateNames].join(', ')}.`, 'red')
    return
   }
+
+  const reconciliation = await verifyPayrollExportAgainstSaved(payrollResults,selectedRows,payrollStart,payrollEnd)
+  if (!reconciliation) return
 
   const periodText = `${payrollStart} to ${payrollEnd}`
   const rows = []
@@ -29244,6 +29342,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    showToast('RCBC generator Excel not created: no employee has a complete, valid RCBC account yet.', 'red')
    return
   }
+
+  const reconciliation = await verifyPayrollExportAgainstSaved(payrollResults,validation.validRows,payrollStart,payrollEnd)
+  if (!reconciliation) return
 
   if (!confirmRCBCMissingAccountExclusions(validation.missingAccountRows)) return
 
@@ -30889,6 +30990,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const exportRows = records
   .filter(record => Number(record.net_pay ?? record.netPay ?? 0) > 0)
   .map(record => ({
+  employeeId:record.employee_id || record.employeeId,
   employeeName:String(record.employee_name || record.employeeName || '').trim(),
   employeeCode:String(record.employee_code || record.employeeCode || '').trim(),
   bankAccount:normalizeBankAccountForExport(record.bankAccount || record.bank_account_number || ''),
@@ -30906,6 +31008,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   showToast('RCBC Excel not created: no employee has a complete, valid bank account yet.', 'red')
   return
  }
+ const reconciliation = await verifyPayrollExportAgainstSaved(records,validation.validRows,start,end)
+ if (!reconciliation) return
  if (!confirmRCBCMissingAccountExclusions(validation.missingAccountRows)) return
 
  try {
@@ -31069,7 +31173,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
  const { data:records, error } = await supabase
  .from('payroll_records')
- .select('id,employee_id,employee_name,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction')
+ .select('id,employee_id,employee_name,employee_acknowledgement,payroll_approved,payroll_locked,payroll_released,payroll_status,approved_at,cash_advance_deduction')
  .eq('payroll_start', start)
  .eq('payroll_end', end)
  .limit(1000)
@@ -31082,6 +31186,11 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   await logAudit('PAYROLL UNDO BLOCKED - RELEASED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Released rows: ${released.length}`)
   return
  }
+ if (records.some(row => row.payroll_approved || row.payroll_locked || row.approved_at || ['approved','released'].includes(String(row.payroll_status||'').toLowerCase()))) {
+  showToast('Undo blocked: approved or locked payroll must not be deleted.', 'red')
+  return
+ }
+ if (!await checkPayrollUndoSnapshotStorage()) return
 
  const disputedCount = records.filter(r => normalizePayrollAcknowledgement(r.employee_acknowledgement) === 'disputed').length
  const agreedCount = records.filter(r => normalizePayrollAcknowledgement(r.employee_acknowledgement) === 'agreed').length
@@ -31095,28 +31204,16 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  ].filter(Boolean).join('\n')
  if (!window.confirm(warning)) return
 
- try {
-  await supabase.from('payslip_disputes')
-  .update({ status:'voided', admin_reason:`Payroll draft undone for recomputation by ${currentAdminLabel}`, reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString() })
-  .eq('payroll_start', start)
-  .eq('payroll_end', end)
-  .neq('status','resolved')
- } catch(e) {
-  console.warn('Dispute voiding skipped:', e)
- }
-
- const { error:deleteError } = await supabase.from('payroll_records')
- .delete()
- .eq('payroll_start', start)
- .eq('payroll_end', end)
- if (deleteError) { showToast('Undo failed: '+deleteError.message, 'red'); return }
-
- try { await supabase.from('payroll_periods').delete().eq('payroll_start', start).eq('payroll_end', end) } catch(e) {}
+ const { error:undoError } = await supabase.rpc('undo_payroll_draft', {
+  p_start:start, p_end:end, p_expected_count:records.length
+ })
+ if (undoError) { showToast('Undo failed; the existing draft was preserved: '+undoError.message, 'red'); return }
  setPayrollResults([])
  setPayrollSummary(null)
  setPayrollReadiness(null)
  setPayrollApproved(false)
  await logAudit('DRAFT PAYROLL UNDONE', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Deleted records: ${records.length}`)
+ setPayrollComparison(null)
  loadPayrollHistory()
  showToast('Draft payroll undone. You can now compute payroll again using the new rules.', 'green')
  }
@@ -31165,6 +31262,18 @@ async function computePayroll() {
   setPayrollSummary(null)
   showToast('No active employees found for payroll.', 'red')
   return
+ }
+
+ // Payroll eligibility is stored on employees, not on the employee_access view.
+ // Fail closed if it cannot be read; otherwise the database trigger could silently
+ // change a saved total after the browser has already displayed it.
+ const employeeIdsForEligibility = empList.map(emp => emp.id)
+ const { data:eligibilityRows, error:eligibilityError } = await supabase.from('employees')
+  .select('id,birthday_pay_eligible').in('id', employeeIdsForEligibility)
+ if (eligibilityError) throw eligibilityError
+ const birthdayEligibilityById = new Map((eligibilityRows || []).map(row => [String(row.id), row.birthday_pay_eligible]))
+ if (birthdayEligibilityById.size !== empList.length || [...birthdayEligibilityById.values()].some(value => typeof value !== 'boolean')) {
+  throw new Error('Birthday-pay eligibility is unavailable for one or more employees; payroll was not saved.')
  }
 
  const { data:holidayList, error:holidayError } = await supabase.from('holidays').select('*').gte('holiday_date', payrollStart).lte('holiday_date', payrollEnd)
@@ -31386,7 +31495,7 @@ async function computePayroll() {
 
   // Birthday Pay: no work, no pay. If employee worked on birthday, add extra 100%.
   let birthdayPay=0
-  if (emp.date_of_birth) {
+  if (birthdayEligibilityById.get(String(emp.id)) === true && emp.date_of_birth) {
    const bdMMDD=emp.date_of_birth.slice(5)
    const years=[payrollStart.slice(0,4), String(Number(payrollStart.slice(0,4))+1)]
    for (const yr of years) {
@@ -31482,7 +31591,8 @@ async function computePayroll() {
     const treatment=calculateSpecialHolidayPay({
      hasWorked, workedMinutes:safeNum(workedInfo?.actualMins,0), restDay, payrollBasis, dailyRate,
      paidLeaveCovered:isPaidLeaveCoveringDate(holidayGuardPaidLeaves, holidayDate),
-     alreadyDeductedForAbsence
+     alreadyDeductedForAbsence,
+     deductUnworkedFixedDay:absenceDeductionApplicable
     })
     holidayPay += treatment.holidayPremium
     absenceDeduction += treatment.unworkedFixedDayDeduction
@@ -31503,8 +31613,8 @@ async function computePayroll() {
   }
 
   const adjustmentBreakdown = buildPayrollAdjustmentSnapshot(adjs || [])
-  let adjEarnings=0,adjDeductions=0
-  for (const adj of adjustmentBreakdown) { if (adj.type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
+  const adjEarnings=sumAdjustmentCents(adjustmentBreakdown,'addition')/100
+  const adjDeductions=sumAdjustmentCents(adjustmentBreakdown,'deduction')/100
   const hasPayForCutoff = moneyRound(basicPay + paidLeavePay + overtimePay + nightDiffPay + holidayPay + adjEarnings) > 0
   const sssDeduction=hasPayForCutoff&&emp.has_sss&&isFirstCutoff?375:0
   const pagibigDeduction=hasPayForCutoff&&emp.has_pagibig&&!isFirstCutoff?200:0
@@ -31516,61 +31626,20 @@ async function computePayroll() {
   const sssDeductionRounded=moneyRound(sssDeduction)
   const pagibigDeductionRounded=moneyRound(pagibigDeduction)
   const philhealthDeductionRounded=moneyRound(philhealthDeduction)
-  // Mandatory deductions remain in the current cutoff. Payroll-adjustment deductions
-  // (charges/other deductions) are deferrable: if the employee has insufficient earnings,
-  // move the whole unpaid adjustment to the next cutoff instead of creating a release blocker.
-  const mandatoryNonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+absenceDeductionRounded)
-  const nextPayrollStart=addDaysToDateString(payrollEnd,1)
-  let adjustmentCapacity=moneyRound(Math.max(0,totalEarnings-mandatoryNonCADeductions))
-  let deferRemainingAdjustments=false
-  const deferredAdjustmentIds=new Set()
-  let deferredAdjustmentTotal=0
-  const orderedDeductionAdjustments=[...adjustmentBreakdown]
-   .filter(item=>item.type!=='addition')
-   .sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')) || String(a.id||'').localeCompare(String(b.id||'')))
-
-  for (const item of orderedDeductionAdjustments) {
-   const amount=moneyRound(Number(item.amount||0))
-   if (amount<=0) continue
-   const sourceRow=(adjs||[]).find(row=>String(row?.id||'')===String(item?.id||''))
-   const fitsCurrentCutoff=!deferRemainingAdjustments && amount<=adjustmentCapacity+0.009
-   if (fitsCurrentCutoff || !sourceRow?.id || !nextPayrollStart) {
-    if (fitsCurrentCutoff) adjustmentCapacity=moneyRound(Math.max(0,adjustmentCapacity-amount))
-    else if (!fitsCurrentCutoff) deferRemainingAdjustments=true
-    continue
-   }
-
-   deferRemainingAdjustments=true
-   const originalDate=String(sourceRow.adjustment_date||item.date||'').slice(0,10)
-   const marker=`AUTO-DEFERRED FROM PAYROLL ${payrollStart} to ${payrollEnd} due insufficient earnings; original adjustment date ${originalDate}.`
-   const currentNotes=String(sourceRow.notes||'').trim()
-   const nextNotes=currentNotes.includes(marker)?currentNotes:[currentNotes,marker].filter(Boolean).join(' | ')
-   const { error:deferError }=await supabase.from('payroll_adjustments').update({ adjustment_date:nextPayrollStart, notes:nextNotes }).eq('id',sourceRow.id).eq('employee_id',emp.id).eq('adjustment_date',originalDate)
-   if (deferError) throw deferError
-   deferredAdjustmentIds.add(String(sourceRow.id))
-   deferredAdjustmentTotal=moneyRound(deferredAdjustmentTotal+amount)
-  }
-
-  const payableAdjustmentBreakdown=adjustmentBreakdown.filter(item=>item.type==='addition' || !deferredAdjustmentIds.has(String(item?.id||'')))
-  const appliedAdjustmentDeductions=moneyRound(payableAdjustmentBreakdown.filter(item=>item.type!=='addition').reduce((sum,item)=>sum+Number(item.amount||0),0))
-  const adjDeductionsRounded=moneyRound(appliedAdjustmentDeductions+absenceDeductionRounded)
-  const nonCADeductions=moneyRound(mandatoryNonCADeductions+appliedAdjustmentDeductions)
-
-  if (deferredAdjustmentIds.size>0) {
-   const { error:deferAuditError }=await supabase.from('audit_logs').insert([{
-    action:'PAYROLL ADJUSTMENT AUTO-DEFERRED',
-    performed_by:'Payroll System',
-    target_employee:emp.full_name||emp.employee_code||emp.id,
-    details:`${deferredAdjustmentIds.size} adjustment(s) totaling ${php(deferredAdjustmentTotal)} moved from payroll ${payrollStart} to ${payrollEnd} into next cutoff starting ${nextPayrollStart} because current earnings were insufficient.`
-   }])
-   if (deferAuditError) console.warn('Payroll adjustment deferral audit failed:',deferAuditError)
-  }
+  // Computing a draft must never change a source transaction. A deduction that
+  // cannot be paid needs an explicit, auditable deferral workflow before saving.
+  const payableAdjustmentBreakdown=adjustmentBreakdown
+  const adjDeductionsRounded=moneyRound(adjDeductions+absenceDeductionRounded)
+  const nonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
 
   // Payroll safety rule: deductions must never create negative net pay.
   // Cash advance is flexible and is always applied last. Any unpaid CA stays in the CA balance.
-  // Only mandatory non-CA deductions can now create a release blocker; deferrable payroll
-  // adjustments are automatically carried to the next cutoff as whole items.
+  // Non-CA deductions create a release blocker until a separate approved
+  // carry-forward ledger can account for them without changing source dates.
   const nonCADeductionOverflow=moneyRound(Math.max(0, nonCADeductions-totalEarnings))
+  if (nonCADeductionOverflow > 0) {
+   throw new Error(`${emp.full_name || emp.employee_code}: deductions exceed earnings by ${php(nonCADeductionOverflow)}. Review the source adjustments before saving payroll.`)
+  }
   const availableForCA=moneyRound(Math.max(0, totalEarnings-nonCADeductions))
   const rawCADeduction=moneyRound((cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0))
   const caDeduction=moneyRound(Math.min(rawCADeduction, availableForCA))
@@ -31657,9 +31726,20 @@ async function computePayroll() {
   if (insertError) throw insertError
  }
 
- const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalLateDeduction:results.reduce((a,p)=>a+(p.lateDeduction||0),0), totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
- setPayrollResults(results)
- setPayrollSummary(s)
+ // The saved rows are authoritative. Reload them before showing a summary or
+ // allowing review, and surface any server-side mutation as a blocking error.
+ const savedResults=await loadSavedPayrollForPeriod(payrollStart,payrollEnd,{ silent:true })
+ const expectedById=new Map(results.map(row=>[String(row.employeeId),row]))
+ const changed=savedResults.flatMap(row=>{
+  const expected=expectedById.get(String(row.employeeId))
+  if (!expected) return [`${row.employeeName}: unexpected saved row`]
+  return ['birthdayPay','totalEarnings','totalDeductions','netPay'].filter(field=>
+   Math.round(safeNum(row[field],0)*100)!==Math.round(safeNum(expected[field],0)*100)
+  ).map(field=>`${row.employeeName}: ${field} calculated ${php(expected[field])}, saved ${php(row[field])}`)
+ })
+ if (savedResults.length!==results.length || changed.length) {
+  throw new Error(`Saved payroll differs from calculation: ${changed.slice(0,4).join(' | ') || 'employee count changed'}. Review the saved draft before approval.`)
+ }
  setPayrollApproved(false)
  const readiness = await inspectPayrollReadiness(payrollStart, payrollEnd, { silent:true })
  const holdCount = (readiness.attendanceExceptions || []).length
@@ -39943,6 +40023,26 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  Attendance corrections are clear, but the current saved draft is still missing: {(payrollReadiness.missingEmployees || []).slice(0,8).map(item=>item.employeeName).join(', ')}{(payrollReadiness.missingEmployees || []).length>8?'...':''}. Click <strong>REBUILD DRAFT AFTER CORRECTIONS</strong> before sending or releasing payroll.
  </div>
  )}
+ </div>
+ )}
+ {payrollComparison && (
+ <div style={{ background:'#fff8e1', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'18px' }}>
+ <h3 style={{ margin:'0 0 8px', color:'#7a5200' }}>Previous Draft vs Saved Recalculation</h3>
+ {payrollComparison.error ? <p style={{ color:'#ca1b1b', margin:0 }}>{payrollComparison.error}</p> : <>
+ <p style={{ margin:'0 0 10px', fontSize:'13px' }}>Previous: <strong>{php(payrollComparison.previousTotal)}</strong> · Current saved: <strong>{php(payrollComparison.currentTotal)}</strong> · Difference: <strong>{php(payrollComparison.difference)}</strong></p>
+ {payrollComparison.changes.length===0 ? <p style={{ margin:0, color:'#2d8a4e' }}>No employee financial amounts changed.</p> :
+ <div style={{ display:'grid', gap:'8px', maxHeight:'400px', overflowY:'auto' }}>{payrollComparison.changes.map(change=><div key={change.employeeId} style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:'9px', padding:'10px', fontSize:'12px' }}>
+ <strong>{change.employeeName || change.employeeCode} ({change.status})</strong>
+ {change.sourcesChanged && <div style={{ color:'#b45309' }}>Source adjustment or cash-advance record changed; inspect the dates and IDs below.</div>}
+ {change.fields.map(field=><div key={field.field}>{field.label}: {php(field.before)} → {php(field.after)} ({php(field.difference)})</div>)}
+ {(change.previousSources.length>0 || change.currentSources.length>0) && <details><summary>Adjustment and cash-advance sources</summary>
+ <div>Previous: {change.previousSources.map(item=>`${item.date} ${item.label} ${php(item.amount)} [${item.id}]`).join(' | ') || 'none'}</div>
+ <div>Current: {change.currentSources.map(item=>`${item.date} ${item.label} ${php(item.amount)} [${item.id}]`).join(' | ') || 'none'}</div>
+ </details>}
+ </div>)}</div>}
+ {payrollReadiness?.comparisonReviewRequired && payrollReadiness?.comparisonBatchId===payrollComparison.batchId && <button style={{...btnBlack,width:'auto',padding:'9px 13px',marginTop:'12px',fontSize:'11px'}} onClick={acknowledgePayrollComparison}>ACKNOWLEDGE REVIEWED COMPARISON</button>}
+ {payrollReadiness?.comparisonBatchId===payrollComparison.batchId && !payrollReadiness?.comparisonReviewRequired && <p style={{margin:'10px 0 0',color:'#2d8a4e'}}>Owner review recorded for this saved payroll.</p>}
+ </>}
  </div>
  )}
  {payrollSummary && (
