@@ -19,9 +19,15 @@ export function getChargeableEarlyOutMinutes({
 }
 
 export function getAppliedPaidWorkGraceMinutes({
- rawPaidWorkShortageMinutes = 0
+ rawPaidWorkShortageMinutes = 0,
+ hasSchedule = false,
+ scheduleGraceAppliedMinutes = 0
 } = {}) {
  const shortage = Math.max(0, Math.round(Number(rawPaidWorkShortageMinutes) || 0))
+ // An on-time-within-grace arrival retains its verified credit even when an
+ // independent early departure makes the day's total shortage exceed 10 min.
+ const arrivalCredit = Math.max(0, Math.round(Number(scheduleGraceAppliedMinutes) || 0))
+ if (hasSchedule && arrivalCredit > 0) return Math.min(shortage, arrivalCredit)
  return shortage <= UNIVERSAL_UNDERTIME_GRACE_MINUTES ? shortage : 0
 }
 
