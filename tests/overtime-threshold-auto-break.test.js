@@ -56,11 +56,24 @@ test('Sheryl four-hour shifts have no meal deduction while scheduled undertime r
  assert.equal(sixHours.deductedBreakMinutes,60)
  assert.equal(sixHours.undertimeMinutes,180)
 })
-test('Myra October 16 short shift credits the full continuous duty and keeps separate undertime',()=>{
+test('Sheryl November 8 grace does not round a four-hour short shift into another UT block',()=>{
+ const ctx=appContext()
+ const metrics=ctx.getAttendanceDayWorkMetrics([{
+  ...log('08:01:22','12:00:54',0,'08:00:00','17:00:00','2026-11-08'),
+  grace_period_minutes:10
+ }])
+ assert.equal(metrics.lateMinutes,0)
+ assert.equal(metrics.graceAppliedMinutes,1)
+ assert.equal(metrics.deductedBreakMinutes,0)
+ assert.equal(metrics.paidWorkedMinutes,239)
+ assert.equal(metrics.rawUndertimeMinutes,240)
+ assert.equal(metrics.undertimeMinutes,240)
+})
+test('Myra October 16 short shift credits the full continuous duty and grace before rounding undertime',()=>{
  const ctx=appContext()
  const metrics=ctx.getAttendanceDayWorkMetrics([{...log('08:09:48','12:01:36',0,'08:00','17:00','2026-10-16'),grace_period_minutes:10}])
  assert.equal(metrics.deductedBreakMinutes,0)
- assert.equal(metrics.undertimeMinutes,270)
+ assert.equal(metrics.undertimeMinutes,240)
 })
 test('actual app calculation clears all four screenshot flags and uses 60 minutes',()=>{
  const ctx=appContext()
