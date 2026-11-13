@@ -156,8 +156,8 @@ test('all employees receive the same 10-minute undertime grace threshold', () =>
  assert.equal(10 - withinGrace, 0)
  assert.equal(beyondGrace, 0)
  assert.equal(Math.ceil((11 - beyondGrace) / 30) * 30, 30)
- assert.equal(thirtyOneMinuteShortage, 0)
- assert.equal(Math.ceil((31 - thirtyOneMinuteShortage) / 30) * 30, 60)
+ assert.equal(thirtyOneMinuteShortage, 10)
+ assert.equal(Math.ceil((31 - thirtyOneMinuteShortage) / 30) * 30, 30)
 })
 
 test('scheduled attendance uses the universal 10-minute UT grace even without schedule-specific grace', () => {
@@ -172,7 +172,22 @@ test('scheduled attendance uses the universal 10-minute UT grace even without sc
   hasSchedule:true,
   scheduleGraceAppliedMinutes:10,
   gracePeriodMinutes:10
- }), 0)
+ }), 10)
+})
+
+test('Sheryl November 8 arrival grace remains credited alongside a four-hour early departure', () => {
+ const rawPaidWorkShortageMinutes = 241 // 08:01 to 12:00 is 239 paid minutes
+ const graceApplied = getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes,
+  hasSchedule:true,
+  scheduleGraceAppliedMinutes:1,
+  gracePeriodMinutes:10
+ })
+ const earlyOutAfterShortShiftMealCredit = 240
+ const chargeableUT = Math.ceil(Math.max(rawPaidWorkShortageMinutes - graceApplied, earlyOutAfterShortShiftMealCredit) / 30) * 30
+ assert.equal(graceApplied, 1)
+ assert.equal(chargeableUT, 240)
+ assert.equal(getAppliedPaidWorkGraceMinutes({ rawPaidWorkShortageMinutes:241, hasSchedule:true, scheduleGraceAppliedMinutes:0 }), 0)
 })
 
 const noScheduleGraceFixture = `import {
