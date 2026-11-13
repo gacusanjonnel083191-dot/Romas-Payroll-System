@@ -28486,7 +28486,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    if (payrollError) throw payrollError
 
    const { data:eligibilityRows, error:eligibilityError } = employeeIds.length > 0
-    ? await supabase.from('employees').select('id,birthday_pay_eligible').in('id',employeeIds)
+    ? await supabase.from('employee_access').select('id,birthday_pay_eligible').in('id',employeeIds)
     : { data:[], error:null }
    if (eligibilityError) throw eligibilityError
    const eligibilityById=new Map((eligibilityRows||[]).map(row=>[String(row.id),row.birthday_pay_eligible]))
@@ -31264,11 +31264,11 @@ async function computePayroll() {
   return
  }
 
- // Payroll eligibility is stored on employees, not on the employee_access view.
+ // Birthday eligibility is available to authorized payroll staff through employee_access.
  // Fail closed if it cannot be read; otherwise the database trigger could silently
  // change a saved total after the browser has already displayed it.
  const employeeIdsForEligibility = empList.map(emp => emp.id)
- const { data:eligibilityRows, error:eligibilityError } = await supabase.from('employees')
+ const { data:eligibilityRows, error:eligibilityError } = await supabase.from('employee_access')
   .select('id,birthday_pay_eligible').in('id', employeeIdsForEligibility)
  if (eligibilityError) throw eligibilityError
  const birthdayEligibilityById = new Map((eligibilityRows || []).map(row => [String(row.id), row.birthday_pay_eligible]))
