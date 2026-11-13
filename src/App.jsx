@@ -3,6 +3,7 @@ import { calculateSpecialHolidayPay, isSpecialHolidayRestDay, specialHolidayOver
 import { comparePayrollSnapshots } from './payrollComparison.js'
 import { reconcilePayrollExport } from './payrollExportReconciliation.js'
 import { payrollReviewRows, REVIEW_FIELDS } from './payrollReviewExport.js'
+import { getPayrollReleaseState } from './payrollReleaseState.js'
 import { buildDeterministicAdjustmentSnapshot, sumAdjustmentCents } from './payrollAdjustmentIntegrity.js'
 import EmployeeDeliverySummary from './EmployeeDeliverySummary.jsx'
 import { formatProductionScreens } from './productionScreenBreakdown.js'
@@ -21966,7 +21967,7 @@ if (role === 'owner') return true
  try {
  const { data: records, error:recordsError } = await supabase
  .from('payroll_records')
- .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
+ .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,payroll_released,approved_at,released_at,payroll_status,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
  .eq('payroll_start', start)
  .eq('payroll_end', end)
  .limit(1000)
@@ -21975,6 +21976,28 @@ if (role === 'owner') return true
 
  if (!records || records.length === 0) {
   showToast('No payroll records found for this period. Compute payroll first.', 'red')
+  return
+ }
+
+ // Check the saved period before the expense/CA checks. A completed release
+ // already created its ledger entries and must be safe to revisit.
+ const releaseState = getPayrollReleaseState(records, isReleasedPayrollRecord)
+ if (releaseState.allReleased) {
+  const expenseCheck = await payrollExpenseAlreadyPosted(start, end)
+  await loadSavedPayrollForPeriod(start, end, { silent:true })
+  if (expenseCheck.error) {
+   showToast('Payroll already released. Expense verification failed: ' + expenseCheck.error + '. Nothing was changed.', 'red')
+  } else if (expenseCheck.duplicate) {
+   showToast('Payroll already released but ' + expenseCheck.count + ' matching expenses exist. Audit the ledger. Nothing was changed.', 'red')
+  } else if (!expenseCheck.exists) {
+   showToast('Payroll already released, but its expense is missing. Verify the ledger before posting any expense. Nothing was changed.', 'red')
+  } else {
+   showToast('Payroll already released and its expense is recorded. No duplicate payroll, deduction or expense was made. RCBC payment export is available.', 'green')
+  }
+  return
+ }
+ if (releaseState.partiallyReleased) {
+  showToast('Release blocked: ' + releaseState.released + ' of ' + releaseState.total + ' payslips are already released. Investigate the mixed state. No records were changed.', 'red')
   return
  }
 
@@ -22064,6 +22087,7 @@ if (role === 'owner') return true
  const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
 
  setPayrollApproved(true)
+ await loadSavedPayrollForPeriod(start, end, { silent:true })
  await logAudit(
   'PAYROLL APPROVED',
   currentAdminLabel,
@@ -40015,7 +40039,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#64748b', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }} onClick={()=>exportPayrollReviewExcel(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT REVIEW EXCEL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToExcel(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT RCBC PAYMENT EXCEL</button>
- <button style={{ background:'#1a1a2e', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
+ <button style={{ background:'#1a1a2e', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`] || (payrollResults.length>0 && payrollResults.every(row=>row.payrollApproved===true)))?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`] || (payrollResults.length>0 && payrollResults.every(row=>row.payrollApproved===true))}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':(payrollResults.length>0 && payrollResults.every(row=>row.payrollApproved===true))?' PAYROLL ALREADY RELEASED':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
  {payrollResults.length>0 && <p style={{fontSize:'12px',color:'#8a6200',margin:'-8px 0 12px'}}>EXPORT REVIEW EXCEL saves a reconciled internal report without bank details. RCBC PAYMENT EXCEL requires released payroll.</p>}
