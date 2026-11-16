@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { SEASONAL_BOXES, seasonalBoxFor, assertWholeSeasonalBoxes, physicalDonutQuantity, expandSeasonalProductionItems, seasonalPackingSummary } from '../src/seasonalBoxPolicy.js'
 import { filterProductionForecastInvoices } from '../src/productionForecastPolicy.js'
+import { formatProductionScreens } from '../src/productionScreenBreakdown.js'
 const six = SEASONAL_BOXES[0], twelve = SEASONAL_BOXES[1]
 const variants=[{id:'shell-id',name:'Shells'},{id:'ring-id',name:'Rings'}]
 const ordered=[{variant_name:six.name,quantity:2,retail_price:160},{variant_name:twelve.name,quantity:1,retail_price:315}]
@@ -60,7 +61,7 @@ test('main forecast expands selected invoices and internal transfers; production
  const invoice={id:'sample',delivery_date:'2026-11-01',delivery_invoice_items:[...ordered,{variant_name:'Rings',variant_id:'ring-id',quantity:10}]}
  const x=source.indexOf(' const BITE_SIZE_DRY_PREMIX_GRAMS ='),y=source.indexOf(' const printForecast =',x)
  const runForecast=(onlineEnabled,onlineSummary)=>{
-  const ctx=vm.createContext({SEASONAL_BOXES,seasonalBoxFor,expandSeasonalProductionItems,seasonalPackingSummary,filterProductionForecastInvoices,sagsTransfersAsForecastDeliveries:()=>[],sagsTransfers:[],resellers:[],donutVariants:[...variants,...SEASONAL_BOXES.map(box=>({id:box.code,name:box.name}))],productionForecastExcludedInvoiceIds:[],deliveryInvoices:[invoice],forecastDate:'2026-11-01',safeNum:(n,d=0)=>Number.isFinite(Number(n))?Number(n):d,isInvoiceExcludedFromProductionForecast:()=>false,compareDonutVariantRowsByGuide:()=>0,ONLINE_FORECAST_ENABLED:onlineEnabled,onlineForecast:{status:'ready',date:'2026-11-01',summary:onlineSummary}})
+  const ctx=vm.createContext({SEASONAL_BOXES,seasonalBoxFor,expandSeasonalProductionItems,seasonalPackingSummary,filterProductionForecastInvoices,formatProductionScreens,sagsTransfersAsForecastDeliveries:()=>[],sagsTransfers:[],resellers:[],donutVariants:[...variants,...SEASONAL_BOXES.map(box=>({id:box.code,name:box.name}))],productionForecastExcludedInvoiceIds:[],deliveryInvoices:[invoice],forecastDate:'2026-11-01',safeNum:(n,d=0)=>Number.isFinite(Number(n))?Number(n):d,isInvoiceExcludedFromProductionForecast:()=>false,compareDonutVariantRowsByGuide:()=>0,ONLINE_FORECAST_ENABLED:onlineEnabled,onlineForecast:{status:'ready',date:'2026-11-01',summary:onlineSummary}})
   vm.runInContext(source.slice(a,b),ctx)
   vm.runInContext(source.slice(x,y)+';this.result={rows:forecastRows,totalPieces,totalDryPremixG,seasonalPacking,smallDonutPieces,onlinePieces}',ctx)
   return ctx.result
@@ -77,4 +78,9 @@ test('main forecast expands selected invoices and internal transfers; production
  assert.equal(withOnline.onlinePieces,6)
  assert.equal(withOnline.rows.find(row=>row.variant_name==='Shells').total,17)
  assert.equal(withOnline.seasonalPacking.reduce((s,row)=>s+row.totalPieces,0),24)
+ const assorted=runForecast(true,{orderCount:1,totalPieces:26,piecesByVariant:{Rings:6,'Glazed Circlets':20},unallocatedPiecesByVariant:{Rings:6,'Glazed Circlets':20}})
+ assert.equal(assorted.rows.find(row=>row.variant_name==='Rings').total,29)
+ assert.equal(assorted.rows.find(row=>row.variant_name==='Glazed Circlets').total,20)
+ assert(!assorted.rows.some(row=>row.variant_name.includes('Assorted')))
+ assert.equal(assorted.totalPieces,60)
 })
