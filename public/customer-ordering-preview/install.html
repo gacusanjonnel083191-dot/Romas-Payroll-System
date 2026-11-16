@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#a71919">
-  <meta name="description" content="Install Roma's Donuts Ordering on your phone or computer.">
+  <meta name="description" content="Download Roma's Donuts Ordering for Android.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Roma's Ordering">
   <link rel="manifest" href="./manifest.json">
@@ -30,56 +30,27 @@
     <img class="logo" src="/icon-192x192.png" alt="Roma's Donuts logo" width="80" height="80">
     <p class="brand">ROMA'S DONUTS</p>
     <span class="eyebrow">Order online</span>
-    <h1>Install Roma's Ordering</h1>
+    <h1>Get Roma's Ordering</h1>
     <p>Keep the menu and your orders one tap away. Order for pickup or request delivery from your phone.</p>
     <div class="actions">
-      <button id="install-button" class="primary" type="button">Install app</button>
+      <a class="button primary" href="./Romas-Ordering.apk" download="Romas-Ordering.apk">Download Android APK</a>
       <a class="button secondary" href="/order">Open ordering</a>
     </div>
-    <p class="feedback" id="install-feedback" role="status" hidden></p>
     <div class="steps" id="install-steps">
-      <p><strong>iPhone or iPad:</strong> Tap Share in your browser, then Add to Home Screen.</p>
-      <p><strong>Android:</strong> Tap Install app above or use your browser menu.</p>
-      <p><strong>Computer:</strong> Tap Install app above or use the install icon in your browser.</p>
+      <p><strong>Android:</strong> Download the APK, open the downloaded file, and confirm Install. Your phone may ask you to allow installation from your browser.</p>
+      <p><strong>iPhone or iPad:</strong> Android APKs cannot be installed on iPhone. Open ordering in Safari, tap Share, then Add to Home Screen.</p>
+      <p><strong>Computer:</strong> Open ordering in your browser. Use the browser's install option if available.</p>
     </div>
     <section class="share" aria-labelledby="share-title">
-      <h2 id="share-title">Share the install link</h2>
-      <p class="note">Scan this code with another device to open this page.</p>
-      <img class="qr" src="./install-qr.png" alt="QR code linking to Roma's Ordering install page" width="492" height="492">
-      <div class="link"><input id="install-url" aria-label="Install link" readonly value="https://rd-business-system.vercel.app/install"><button id="copy-button" type="button">Copy link</button></div>
+      <h2 id="share-title">Share the Android APK</h2>
+      <p class="note">Scan this code on an Android phone to download the APK.</p>
+      <img class="qr" src="./install-qr.png" alt="QR code linking directly to the Roma's Ordering Android APK" width="492" height="492">
+      <div class="link"><input id="install-url" aria-label="APK download link" readonly value="https://rd-business-system.vercel.app/customer-ordering-preview/Romas-Ordering.apk"><button id="copy-button" type="button">Copy link</button></div>
       <a href="./install-qr.png" download="Romas-Ordering-Install-QR.png">Download QR code for your post</a>
     </section>
     <p class="note" style="margin-top:20px">An internet connection is required to place and check orders.</p>
   </main>
   <script>
-    let installPrompt = null;
-    const installButton = document.getElementById('install-button');
-    const feedback = document.getElementById('install-feedback');
-    const showFeedback = message => { feedback.textContent = message; feedback.hidden = false; };
-    window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.textContent = 'Install app'; });
-    window.addEventListener('appinstalled', () => { installPrompt = null; installButton.textContent = 'App installed'; installButton.disabled = true; showFeedback('Roma’s Ordering is installed. Open it from your home screen or apps.'); });
-    installButton.addEventListener('click', async () => {
-      if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
-        showFeedback('Roma’s Ordering is already open as an installed app.');
-        return;
-      }
-      if (installPrompt) {
-        const prompt = installPrompt;
-        installPrompt = null;
-        try {
-          const choice = await prompt.prompt() || await prompt.userChoice;
-          if (choice?.outcome === 'accepted') showFeedback('Installing Roma’s Ordering. Look for its icon on your home screen or in your apps.');
-          else showFeedback('Installation was cancelled. You can try again from your browser menu.');
-          return;
-        } catch { /* Show browser instructions below. */ }
-      }
-      const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-      showFeedback(appleMobile
-        ? 'On iPhone or iPad, tap your browser’s Share button, then Add to Home Screen. The browser does not show a one-tap install pop-up here.'
-        : 'This browser has not offered a one-tap install prompt. Open its menu and choose Install app or Add to Home screen. If Roma’s Ordering is already installed, open it from your apps.');
-      document.getElementById('install-steps').scrollIntoView({ behavior:'smooth', block:'center' });
-    });
-    window.setTimeout(() => { if (!installPrompt && !installButton.disabled) installButton.textContent = 'Install app / show steps'; }, 1500);
     document.getElementById('copy-button').addEventListener('click', async event => {
       const input = document.getElementById('install-url');
       try { await navigator.clipboard.writeText(input.value); }

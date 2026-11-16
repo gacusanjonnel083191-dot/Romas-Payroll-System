@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.romasdonuts.ordering",
+      "sha256_cert_fingerprints": [
+        "D1:FB:7E:69:3F:9F:9A:42:19:2D:B1:76:D2:79:8B:6A:08:D7:D0:95:F0:33:AF:4C:CC:71:8F:6D:EA:4B:BF:92"
+      ]
+    }
+  }
+]

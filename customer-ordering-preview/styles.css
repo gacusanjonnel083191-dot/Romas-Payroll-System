@@ -39,16 +39,9 @@
 @media(max-width:740px){.product-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:540px){.product-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.product-art{height:132px}.product-content{padding:9px 7px 11px;min-height:154px}.product-content h3{font-size:12px;min-height:32px}.product-bottom .price{font-size:14px}.product-bottom .price small{font-size:9px}.qty-editor button{width:44px;min-width:44px;height:44px}.qty-editor input{height:44px}}
 @media(max-width:360px){.product-grid{grid-template-columns:1fr}.product-art{height:150px}}
-.nav button.install-app-button{background:#ffd152;color:#5f151a}
-.nav button.install-app-button:hover{background:#ffe080}
-@media(display-mode:standalone){.nav button.install-app-button{display:none}}
-#install-guide{max-width:min(440px,calc(100vw - 32px));border:0;border-radius:18px;padding:26px;color:#2d2320;box-shadow:0 20px 60px #2d232066}
-#install-guide::backdrop{background:#211311a8}
-#install-guide h2{color:#8c1016;margin:0 0 12px}
-#install-guide p{line-height:1.5;margin:0 0 12px}
-#install-guide ul{padding-left:20px;line-height:1.6;margin:0 0 16px}
-#install-guide li+li{margin-top:8px}
-#install-guide form{text-align:right}
+.nav .install-app-button{background:#ffd152;color:#5f151a;border:0;border-radius:999px;padding:10px 16px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center}
+.nav .install-app-button:hover{background:#ffe080}
+@media(max-width:650px){.nav .install-app-button{font-size:12px;padding:8px 10px}}
 
 /* Finished individual photos have their own canvas and never use clipping masks. */
 .product-art.clean-product-art{background:#fffaf4;height:auto;aspect-ratio:1;width:100%;padding:12px}
