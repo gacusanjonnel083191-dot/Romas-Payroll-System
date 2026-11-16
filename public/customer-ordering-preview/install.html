@@ -18,6 +18,8 @@
     h1{color:#6e1219;font:700 clamp(30px,7vw,42px)/1.12 Georgia,serif;margin:8px 0 12px}p{margin:0 0 18px}.actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin:20px 0}
     button,.button{border:0;border-radius:12px;min-height:46px;padding:11px 18px;font:700 15px system-ui;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
     .primary{background:#a71919;color:#fff}.secondary{background:#fff4e7;color:#7d171b}.share{border-top:1px solid #f0ddd0;margin-top:24px;padding-top:22px}.share h2{font-size:20px;color:#6e1219;margin:0 0 6px}
+    .feedback{background:#fff0d4;border:1px solid #dcaa50;border-radius:12px;padding:12px;text-align:left;color:#5a3510;font-size:14px}
+    [hidden]{display:none!important}
     .qr{width:min(260px,70vw);height:auto;margin:10px auto;display:block;image-rendering:pixelated}.link{display:flex;gap:8px;margin:12px 0}.link input{min-width:0;flex:1;border:1px solid #dcbfb4;border-radius:10px;padding:10px;font:13px system-ui}
     .link button{background:#7d171b;color:white}.note{font-size:13px;color:#765e56}.steps{background:#fff9f1;border-radius:12px;padding:15px;text-align:left;font-size:14px}.steps p{margin:0 0 7px}.steps p:last-child{margin:0}
     @media(max-width:440px){main{padding:20px}.link{flex-direction:column}.link button{width:100%}}
@@ -34,6 +36,7 @@
       <button id="install-button" class="primary" type="button">Install app</button>
       <a class="button secondary" href="/order">Open ordering</a>
     </div>
+    <p class="feedback" id="install-feedback" role="status" hidden></p>
     <div class="steps" id="install-steps">
       <p><strong>iPhone or iPad:</strong> Tap Share in your browser, then Add to Home Screen.</p>
       <p><strong>Android:</strong> Tap Install app above or use your browser menu.</p>
@@ -51,16 +54,32 @@
   <script>
     let installPrompt = null;
     const installButton = document.getElementById('install-button');
-    window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; });
-    window.addEventListener('appinstalled', () => { installPrompt = null; installButton.textContent = 'App installed'; installButton.disabled = true; });
+    const feedback = document.getElementById('install-feedback');
+    const showFeedback = message => { feedback.textContent = message; feedback.hidden = false; };
+    window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.textContent = 'Install app'; });
+    window.addEventListener('appinstalled', () => { installPrompt = null; installButton.textContent = 'App installed'; installButton.disabled = true; showFeedback('Roma’s Ordering is installed. Open it from your home screen or apps.'); });
     installButton.addEventListener('click', async () => {
+      if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
+        showFeedback('Roma’s Ordering is already open as an installed app.');
+        return;
+      }
       if (installPrompt) {
         const prompt = installPrompt;
         installPrompt = null;
-        try { await prompt.prompt(); await prompt.userChoice; return; } catch { /* Browser instructions remain visible. */ }
+        try {
+          const choice = await prompt.prompt() || await prompt.userChoice;
+          if (choice?.outcome === 'accepted') showFeedback('Installing Roma’s Ordering. Look for its icon on your home screen or in your apps.');
+          else showFeedback('Installation was cancelled. You can try again from your browser menu.');
+          return;
+        } catch { /* Show browser instructions below. */ }
       }
+      const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      showFeedback(appleMobile
+        ? 'On iPhone or iPad, tap your browser’s Share button, then Add to Home Screen. The browser does not show a one-tap install pop-up here.'
+        : 'This browser has not offered a one-tap install prompt. Open its menu and choose Install app or Add to Home screen. If Roma’s Ordering is already installed, open it from your apps.');
       document.getElementById('install-steps').scrollIntoView({ behavior:'smooth', block:'center' });
     });
+    window.setTimeout(() => { if (!installPrompt && !installButton.disabled) installButton.textContent = 'Install app / show steps'; }, 1500);
     document.getElementById('copy-button').addEventListener('click', async event => {
       const input = document.getElementById('install-url');
       try { await navigator.clipboard.writeText(input.value); }
