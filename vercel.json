@@ -1,7 +1,9 @@
 {
   "redirects": [
     { "source": "/order", "destination": "/customer-ordering-preview/", "permanent": false },
-    { "source": "/order/", "destination": "/customer-ordering-preview/", "permanent": false }
+    { "source": "/order/", "destination": "/customer-ordering-preview/", "permanent": false },
+    { "source": "/install", "destination": "/customer-ordering-preview/install.html", "permanent": false },
+    { "source": "/install/", "destination": "/customer-ordering-preview/install.html", "permanent": false }
   ],
   "headers": [
     {
@@ -24,6 +26,12 @@
     },
     {
       "source": "/customer-ordering-preview/manifest.json",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache" }
+      ]
+    },
+    {
+      "source": "/customer-ordering-preview/install.html",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache" }
       ]

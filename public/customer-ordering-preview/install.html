@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#a71919">
+  <meta name="description" content="Install Roma's Donuts Ordering on your phone or computer.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Roma's Ordering">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192x192.png">
+  <link rel="icon" type="image/png" href="/icon-192x192.png">
+  <title>Install Roma's Donuts Ordering</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#fff9f1;color:#322421;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center;padding:20px}
+    main{width:min(100%,540px);background:#fff;border:1px solid #f0ddd0;border-radius:24px;box-shadow:0 18px 54px #6b221b1c;padding:28px;text-align:center}
+    .logo{width:80px;height:80px;object-fit:contain;border-radius:50%}.brand{font-weight:800;color:#8c1016;margin:10px 0 2px}.eyebrow{color:#a71919;text-transform:uppercase;letter-spacing:.12em;font-size:12px;font-weight:800}
+    h1{color:#6e1219;font:700 clamp(30px,7vw,42px)/1.12 Georgia,serif;margin:8px 0 12px}p{margin:0 0 18px}.actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin:20px 0}
+    button,.button{border:0;border-radius:12px;min-height:46px;padding:11px 18px;font:700 15px system-ui;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+    .primary{background:#a71919;color:#fff}.secondary{background:#fff4e7;color:#7d171b}.share{border-top:1px solid #f0ddd0;margin-top:24px;padding-top:22px}.share h2{font-size:20px;color:#6e1219;margin:0 0 6px}
+    .qr{width:min(260px,70vw);height:auto;margin:10px auto;display:block;image-rendering:pixelated}.link{display:flex;gap:8px;margin:12px 0}.link input{min-width:0;flex:1;border:1px solid #dcbfb4;border-radius:10px;padding:10px;font:13px system-ui}
+    .link button{background:#7d171b;color:white}.note{font-size:13px;color:#765e56}.steps{background:#fff9f1;border-radius:12px;padding:15px;text-align:left;font-size:14px}.steps p{margin:0 0 7px}.steps p:last-child{margin:0}
+    @media(max-width:440px){main{padding:20px}.link{flex-direction:column}.link button{width:100%}}
+  </style>
+</head>
+<body>
+  <main>
+    <img class="logo" src="/icon-192x192.png" alt="Roma's Donuts logo" width="80" height="80">
+    <p class="brand">ROMA'S DONUTS</p>
+    <span class="eyebrow">Order online</span>
+    <h1>Install Roma's Ordering</h1>
+    <p>Keep the menu and your orders one tap away. Order for pickup or request delivery from your phone.</p>
+    <div class="actions">
+      <button id="install-button" class="primary" type="button">Install app</button>
+      <a class="button secondary" href="/order">Open ordering</a>
+    </div>
+    <div class="steps" id="install-steps">
+      <p><strong>iPhone or iPad:</strong> Tap Share in your browser, then Add to Home Screen.</p>
+      <p><strong>Android:</strong> Tap Install app above or use your browser menu.</p>
+      <p><strong>Computer:</strong> Tap Install app above or use the install icon in your browser.</p>
+    </div>
+    <section class="share" aria-labelledby="share-title">
+      <h2 id="share-title">Share the install link</h2>
+      <p class="note">Scan this code with another device to open this page.</p>
+      <img class="qr" src="./install-qr.png" alt="QR code linking to Roma's Ordering install page" width="492" height="492">
+      <div class="link"><input id="install-url" aria-label="Install link" readonly value="https://rd-business-system.vercel.app/install"><button id="copy-button" type="button">Copy link</button></div>
+      <a href="./install-qr.png" download="Romas-Ordering-Install-QR.png">Download QR code for your post</a>
+    </section>
+    <p class="note" style="margin-top:20px">An internet connection is required to place and check orders.</p>
+  </main>
+  <script>
+    let installPrompt = null;
+    const installButton = document.getElementById('install-button');
+    window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; });
+    window.addEventListener('appinstalled', () => { installPrompt = null; installButton.textContent = 'App installed'; installButton.disabled = true; });
+    installButton.addEventListener('click', async () => {
+      if (installPrompt) {
+        const prompt = installPrompt;
+        installPrompt = null;
+        try { await prompt.prompt(); await prompt.userChoice; return; } catch { /* Browser instructions remain visible. */ }
+      }
+      document.getElementById('install-steps').scrollIntoView({ behavior:'smooth', block:'center' });
+    });
+    document.getElementById('copy-button').addEventListener('click', async event => {
+      const input = document.getElementById('install-url');
+      try { await navigator.clipboard.writeText(input.value); }
+      catch { input.select(); document.execCommand('copy'); }
+      event.currentTarget.textContent = 'Copied';
+    });
+    if ('serviceWorker' in navigator) window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/customer-ordering-preview/sw.js', { scope:'/customer-ordering-preview/' }).catch(() => {});
+    });
+  </script>
+</body>
+</html>
