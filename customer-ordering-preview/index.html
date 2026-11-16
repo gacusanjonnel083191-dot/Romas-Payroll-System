@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#a71919" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Roma's Ordering" />
+    <meta name="description" content="Order Roma's Donuts online for pickup or delivery." />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="/icon-192x192.png" />
+    <link rel="icon" type="image/png" href="/icon-192x192.png" />
     <title>Roma's Donuts — Order online</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -13,7 +20,26 @@
   </head>
   <body>
     <div id="app"></div>
+    <dialog id="install-guide" aria-labelledby="install-guide-title">
+      <h2 id="install-guide-title">Install Roma's Ordering</h2>
+      <p>Open this page in your browser, then add it to your home screen:</p>
+      <ul>
+        <li><strong>iPhone or iPad:</strong> In Safari, tap Share, then Add to Home Screen.</li>
+        <li><strong>Android:</strong> In Chrome, tap the menu (⋮), then Install app or Add to Home screen.</li>
+        <li><strong>Computer:</strong> Look for Install in your browser's address bar or menu.</li>
+      </ul>
+      <p>An internet connection is needed to place and check orders.</p>
+      <form method="dialog"><button class="btn btn-primary" type="submit">Got it</button></form>
+    </dialog>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script type="module" src="./main.js?v=next-day-cutoff-5pm-20261103"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/customer-ordering-preview/sw.js', { scope: '/customer-ordering-preview/' })
+            .catch(error => console.warn('Customer app registration failed:', error))
+        })
+      }
+    </script>
   </body>
 </html>

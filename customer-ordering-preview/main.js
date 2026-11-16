@@ -64,6 +64,15 @@ let marker;
 let error = '';
 let toastTimer;
 const app = document.getElementById('app');
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  document.querySelector('[data-install-app]')?.remove();
+});
 const money = n => `₱${Number(n || 0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const formatDate = value => value ? new Intl.DateTimeFormat('en-PH',{timeZone:PH_TZ,year:'numeric',month:'short',day:'numeric'}).format(new Date(`${value}T12:00:00+08:00`)) : '';
@@ -80,7 +89,7 @@ function suggestedBranch(pin){
 function quoteTotal(){ return subtotal()+(draft.type==='delivery' ? draft.quote?.fee || 0 : 0); }
 function itemRows(items){ return items.map(item=>`<div class="summary-line"><span>${esc(item.name)} × ${item.quantity} ${esc(item.unitLabel||'')}</span><strong>${money(item.quantity*item.unitPrice)}</strong></div>`).join(''); }
 
-function renderHeader(){return `<header class="topbar"><div class="top-inner"><div class="brand"><img src="./assets/logo.png" alt="Roma's Donuts logo"><span>Roma's Donuts</span></div><nav class="nav" aria-label="Ordering navigation"><button data-nav="shop" class="${page==='shop'||page==='checkout'?'active':''}">Order online</button><button data-nav="orders" class="${page==='orders'?'active':''}">My orders</button>${LIVE_ORDERING?'':`<button data-nav="staff" class="staff ${page==='staff'?'active':''}">Staff dashboard</button>`}</nav></div></header><div class="demo-ribbon">${LIVE_ORDERING?(liveDeliveryAvailable?'PICKUP & DELIVERY REQUESTS · Staff confirms every order':'PICKUP ORDERING · Orders are saved by Roma’s Donuts'):'INTERACTIVE PREVIEW · Menu prices from your uploaded sheets · Orders stay in this browser'}</div>`;}
+function renderHeader(){return `<header class="topbar"><div class="top-inner"><div class="brand"><img src="./assets/logo.png" alt="Roma's Donuts logo"><span>Roma's Donuts</span></div><nav class="nav" aria-label="Ordering navigation"><button data-nav="shop" class="${page==='shop'||page==='checkout'?'active':''}">Order online</button><button data-nav="orders" class="${page==='orders'?'active':''}">My orders</button>${LIVE_ORDERING?'<button type="button" data-install-app class="install-app-button">Install app</button>':`<button data-nav="staff" class="staff ${page==='staff'?'active':''}">Staff dashboard</button>`}</nav></div></header><div class="demo-ribbon">${LIVE_ORDERING?(liveDeliveryAvailable?'PICKUP & DELIVERY REQUESTS · Staff confirms every order':'PICKUP ORDERING · Orders are saved by Roma’s Donuts'):'INTERACTIVE PREVIEW · Menu prices from your uploaded sheets · Orders stay in this browser'}</div>`;}
 function productArt(p){
   return `<div class="product-art clean-product-art"><img class="clean-product-photo" src="${esc(p.cleanImage)}" alt="${esc(p.name)}" loading="lazy" width="512" height="512"></div>`;
 }
@@ -337,6 +346,22 @@ app.addEventListener('input',event=>{const el=event.target;if(el.dataset.qty){co
 app.addEventListener('input',event=>{if(event.target.id==='address-search'&&draft.address&&event.target.value!==draft.address){draft.address='';const selected=document.getElementById('address');if(selected)selected.value='';}});
 app.addEventListener('change',event=>{const el=event.target;if(el.dataset.qty){const qty=Math.min(999,Math.max(0,Math.floor(Number(el.value)||0)));cart[el.dataset.qty]=qty;render();return;}if(el.dataset.status){const order=db.orders.find(o=>o.id===el.dataset.status);if(order){order.status=el.value;save();render();notify('Preview status updated');}return;}if(!el.dataset.field)return;draft[el.dataset.field]=el.value;if(el.dataset.field==='date'||el.dataset.field==='town'||el.dataset.field==='branch'){if(el.dataset.field==='town'){++addressRequestId;draft.pin=null;draft.quote=null;draft.address='';draft.addressQuery='';addressMatches=[];}if(el.dataset.field==='branch'&&draft.pin){draft.quote=null;calculateQuote();}else render();}if(el.dataset.field==='lat'||el.dataset.field==='lng'){const lat=Number(document.querySelector('[name="lat"]')?.value),lng=Number(document.querySelector('[name="lng"]')?.value);if(Number.isFinite(lat)&&Number.isFinite(lng)&&lat!==0&&lng!==0)setPin({lat,lng});}});
 app.addEventListener('submit',event=>{event.preventDefault();const form=event.target;if(form.id==='order-form'){createOrder(new FormData(form));return;}if(form.dataset.chat){if(LIVE_ORDERING){void sendLiveChat(form);return;}const order=db.orders.find(o=>o.id===form.dataset.chat);const message=String(new FormData(form).get('message')||'').trim();if(order&&message){order.messages.push({from:form.dataset.from,text:message,at:new Date().toISOString()});save();render();document.querySelector('.chat-messages')?.scrollTo(0,99999);}return;}if(form.id==='settings-form'){const data=new FormData(form);const next={minimumFee:Number(data.get('minimumFee')),perKm:Number(data.get('perKm')),includedKm:Number(data.get('includedKm'))};if(Object.values(next).some(v=>!Number.isFinite(v)||v<0)){notify('Enter valid nonnegative fee values');return;}Object.assign(db.settings,next);for(const name of BRANCH_NAMES){const lat=Number(data.get(`lat:${name}`)),lng=Number(data.get(`lng:${name}`));if(Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180)db.settings.branches[name]={lat,lng,enabled:true};}if(draft.type==='delivery'&&draft.pin){draft.quote=null;draft.branch=suggestedBranch(draft.pin);if(draft.branch)calculateQuote(false);}save();notify('Preview settings saved');render();}});
+app.addEventListener('click', async event => {
+  if (!event.target.closest('[data-install-app]')) return;
+  if (deferredInstallPrompt) {
+    const prompt = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    try {
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      if (choice?.outcome === 'accepted') notify('Roma’s Ordering is installing');
+      return;
+    } catch { /* Show browser instructions below. */ }
+  }
+  const guide = document.getElementById('install-guide');
+  if (guide?.showModal) guide.showModal();
+  else window.alert('Use your browser menu to install Roma’s Ordering. On iPhone, open this page in Safari and choose Share → Add to Home Screen.');
+});
 window.addEventListener('storage',event=>{if(event.key===KEY){db=load();if(draft.type==='delivery'&&draft.pin){draft.quote=null;draft.branch=suggestedBranch(draft.pin);if(draft.branch)calculateQuote(false);}render();}});
 render();
 if(LIVE_ORDERING)void refreshLiveConfig();
