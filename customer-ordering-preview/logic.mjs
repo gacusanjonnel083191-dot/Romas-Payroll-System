@@ -19,11 +19,23 @@ export function earliestOrderDate(now = new Date()) {
   return phDate(new Date(Date.parse(`${today}T12:00:00+08:00`) + daysAhead * 86_400_000));
 }
 
+export function isSundayFulfillmentDate(date) {
+  return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+    && new Date(`${date}T12:00:00+08:00`).getUTCDay() === 0;
+}
+
+export function firstFulfillmentDate(now = new Date()) {
+  const earliest = earliestOrderDate(now);
+  return isSundayFulfillmentDate(earliest)
+    ? phDate(new Date(Date.parse(`${earliest}T12:00:00+08:00`) + 86_400_000))
+    : earliest;
+}
+
 const PREVIEW_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'17:00'};
 export const DELIVERY_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'20:00'};
 
 export function availableSlots(date, now = new Date(), hours = PREVIEW_HOURS) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < earliestOrderDate(now)) return [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < earliestOrderDate(now) || isSundayFulfillmentDate(date)) return [];
   if (!hours || !Array.isArray(hours.days)) return [];
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   if (!hours.days.includes(weekday)) return [];
