@@ -20,10 +20,8 @@ test('accepted pieces include box multipliers and keep assorted flavors unalloca
   ]}, date)
   assert.equal(summary.orderCount, 1)
   assert.equal(summary.totalPieces, 41)
-  assert.deepEqual(summary.piecesByVariant, {
-    Rings:2, 'Assorted Rings (unallocated)':12,
-    'Assorted Circlets (unallocated)':12, 'Bavarian Bites':15,
-  })
+  assert.deepEqual(summary.piecesByVariant, {Rings:14, 'Glazed Circlets':12, 'Bavarian Bites':15})
+  assert.deepEqual(summary.unallocatedPiecesByVariant, {Rings:12, 'Glazed Circlets':12})
 })
 
 test('incomplete, duplicate, or unaccepted online orders fail rather than undercount', () => {

@@ -46030,11 +46030,9 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   'Bavarian Bites': BITE_SIZE_DRY_PREMIX_GRAMS,
   'Choco Lollisticks': 0,
   'Glazed Circlets': 11.7,
-  'Assorted Circlets (unallocated)': 11.7,
   'M-Puff': 11.7,
   'Cinnamon Rolls': 27,
   'Rings': 27,
-  'Assorted Rings (unallocated)': 27,
   'Shells': 27,
   'Matcha Supreme': 27,
   'Bavarian Midnight': 27,
@@ -46229,6 +46227,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
     && freshSummary.totalPieces === onlineSummary?.totalPieces
     && Object.keys(freshSummary.piecesByVariant).length === Object.keys(onlineSummary?.piecesByVariant || {}).length
     && Object.entries(freshSummary.piecesByVariant).every(([name,pieces]) => onlineSummary?.piecesByVariant?.[name] === pieces)
+    && Object.keys(freshSummary.unallocatedPiecesByVariant).length === Object.keys(onlineSummary?.unallocatedPiecesByVariant || {}).length
+    && Object.entries(freshSummary.unallocatedPiecesByVariant).every(([name,pieces]) => onlineSummary?.unallocatedPiecesByVariant?.[name] === pieces)
    if (!countsMatch) {
     setOnlineForecast({status:'ready', date:forecastDate, summary:freshSummary, error:''})
     showToast('Online orders changed. Review the updated quantities, then print again.','orange')
@@ -46372,7 +46372,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  return (
  <Fragment key={r.variant_name}>
  <tr style={{ background:i%2===0?'white':'#fafafa' }}>
- <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</td>
+ <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Delivery {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}{safeNum(onlineSummary?.unallocatedPiecesByVariant?.[r.variant_name],0)>0?` (${safeNum(onlineSummary.unallocatedPiecesByVariant[r.variant_name],0).toLocaleString('en-PH')} assorted, flavor unallocated)`:''}</small>}</td>
  <td style={{ padding:'7px 12px', borderTop:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</td>
  {screenGroup ? <>
  <td rowSpan={screenGroup.rowSpan} style={{ borderTop:'1px solid #f0f0f0' }} />

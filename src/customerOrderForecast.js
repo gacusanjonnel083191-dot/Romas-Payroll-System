@@ -16,8 +16,8 @@ const NAMED_VARIANTS = {
 
 export function productionVariantForProduct(productId) {
   const id = String(productId || '').trim()
-  if (id === 'assorted-rings-6' || id === 'assorted-rings-12') return 'Assorted Rings (unallocated)'
-  if (id === 'assorted-circlets-12' || id === 'assorted-circlets-20') return 'Assorted Circlets (unallocated)'
+  if (id === 'assorted-rings-6' || id === 'assorted-rings-12') return 'Rings'
+  if (id === 'assorted-circlets-12' || id === 'assorted-circlets-20') return 'Glazed Circlets'
   if (RING_IDS.has(id)) return 'Rings'
   if (FILLED_IDS.has(id)) return 'Shells'
   if (id.startsWith('circlet-')) return 'Glazed Circlets'
@@ -41,6 +41,7 @@ export function summarizeAcceptedOnlineOrders(payload, requestedDate) {
     orderIds.add(order.id)
   }
   const piecesByVariant = new Map()
+  const unallocatedPiecesByVariant = new Map()
   const ordersWithItems = new Set()
   const itemKeys = new Set()
   let totalPieces = 0
@@ -59,8 +60,11 @@ export function summarizeAcceptedOnlineOrders(payload, requestedDate) {
     const pieces = quantity * piecesPerUnit
     if (!Number.isSafeInteger(pieces)) throw new Error('Online forecast quantity is too large.')
     piecesByVariant.set(variant, (piecesByVariant.get(variant) || 0) + pieces)
+    if (String(item.product_id).startsWith('assorted-')) {
+      unallocatedPiecesByVariant.set(variant, (unallocatedPiecesByVariant.get(variant) || 0) + pieces)
+    }
     totalPieces += pieces
   }
   if (ordersWithItems.size !== orderIds.size) throw new Error('An accepted online order has no item snapshots.')
-  return {orderCount:orderIds.size, totalPieces, piecesByVariant:Object.fromEntries(piecesByVariant)}
+  return {orderCount:orderIds.size, totalPieces, piecesByVariant:Object.fromEntries(piecesByVariant), unallocatedPiecesByVariant:Object.fromEntries(unallocatedPiecesByVariant)}
 }
