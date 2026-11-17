@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {availableSlots, earliestOrderDate, firstFulfillmentDate, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, DELIVERY_HOURS} from '../logic.mjs';
+import {availableSlots, earliestOrderDate, firstFulfillmentDate, isSundayPreorderTooLate, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, DELIVERY_HOURS} from '../logic.mjs';
 import {PRODUCTS, findProduct, catalogCards} from '../catalog.mjs';
 import {PICKUP_HOURS, earliestOrderDate as serverEarliestOrderDate, validateSchedule} from '../../supabase/functions/public-ordering/rules.mjs';
 
@@ -33,14 +33,18 @@ test('checkout slots match the four confirmed pickup schedules', () => {
   assert.deepEqual(slots(pamma,'2026-10-17'),[]);
   assert.equal(slots(school,'2026-10-17').at(-1),'18:00');
   assert.deepEqual(slots(school,'2026-10-18'),[]);
-  assert.deepEqual(slots(gas,'2026-10-18'),[]);
+  assert.equal(slots(gas,'2026-10-18').at(-1),'20:00');
   assert.deepEqual(availableSlots('2026-10-18',now,null),[]);
 });
 
-test('Sunday fulfillment is unavailable and the next date offered is Monday', () => {
+test('Sunday pre-orders remain open through Friday and close at Saturday midnight Manila time', () => {
   const now = new Date('2026-10-29T19:18:00+08:00');
-  assert.deepEqual(availableSlots('2026-11-01', now, DELIVERY_HOURS), []);
-  assert.equal(validateSchedule('2026-11-01', '10:00', now), null);
+  assert.equal(availableSlots('2026-11-01', now, DELIVERY_HOURS)[0], '08:00');
+  assert(validateSchedule('2026-11-01', '10:00', now));
+  assert.equal(firstFulfillmentDate(new Date('2026-10-30T23:59:59+08:00')), '2026-11-01');
+  assert.equal(isSundayPreorderTooLate('2026-11-01', new Date('2026-10-30T23:59:59+08:00')), false);
+  assert.equal(isSundayPreorderTooLate('2026-11-01', new Date('2026-10-31T00:00:00+08:00')), true);
+  assert.deepEqual(availableSlots('2026-11-01', new Date('2026-10-31T00:00:00+08:00'), DELIVERY_HOURS), []);
   assert.equal(firstFulfillmentDate(new Date('2026-10-31T10:00:00+08:00')), '2026-11-02');
   const slots = availableSlots('2026-11-02', now, DELIVERY_HOURS);
   assert.equal(slots[0], '08:00');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import catalog from './catalog.json' with {type:'json'};
-import {DELIVERY_COVERAGE, PICKUP_HOURS, earliestOrderDate, isOrderDateAllowed, isSundayFulfillmentDate, validatePickupSchedule, pricedItems, validPhone, validRequestId, validAccessToken} from './rules.mjs';
+import {DELIVERY_COVERAGE, PICKUP_HOURS, earliestOrderDate, isOrderDateAllowed, isSundayFulfillmentDate, isSundayPreorderTooLate, validatePickupSchedule, pricedItems, validPhone, validRequestId, validAccessToken} from './rules.mjs';
 import {PRODUCTS} from '../../../customer-ordering-preview/catalog.mjs';
 
 test('server catalog matches every preview SKU and price', () => {
@@ -52,16 +52,20 @@ test('server enforces each pickup point’s Manila days and hours', () => {
   assert.equal(validatePickupSchedule(pamma,'2026-10-16','17:30',now),null);
   assert(validatePickupSchedule(school,'2026-10-17','18:00',now));
   assert.equal(validatePickupSchedule(school,'2026-10-18','10:00',now),null);
-  assert.equal(validatePickupSchedule(gas,'2026-10-18','20:00',now),null); // Sunday closed for all locations
+  assert(validatePickupSchedule(gas,'2026-10-18','20:00',now)); // This location is open Sunday
   assert.equal(validatePickupSchedule(gas,'2026-10-18','20:30',now),null);
   assert.equal(validatePickupSchedule(gas,'2026-02-30','10:00',now),null);
   assert.equal(validatePickupSchedule(gas,'2026-10-16','07:30',now),null);
   assert.equal(validatePickupSchedule('Dagupan City','2026-10-16','10:00',now),null);
 });
 
-test('Sunday pickup and delivery dates are unavailable', () => {
+test('Sunday orders need two calendar days of notice in Manila', () => {
   assert.equal(isSundayFulfillmentDate('2026-11-22'), true);
-  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T09:00:00Z')), false);
+  assert.equal(isSundayPreorderTooLate('2026-11-22', new Date('2026-11-20T15:59:59Z')), false);
+  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T15:59:59Z')), true);
+  assert.equal(isSundayPreorderTooLate('2026-11-22', new Date('2026-11-20T16:00:00Z')), true);
+  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T16:00:00Z')), false);
+  assert.equal(isOrderDateAllowed('2026-11-29', new Date('2026-11-20T16:00:00Z')), true);
   assert.equal(isOrderDateAllowed('2026-11-23', new Date('2026-11-20T09:00:00Z')), true);
 });
 

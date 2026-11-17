@@ -24,9 +24,14 @@ export function isSundayFulfillmentDate(date) {
     && new Date(`${date}T12:00:00+08:00`).getUTCDay() === 0;
 }
 
+export function isSundayPreorderTooLate(date, now = new Date()) {
+  return isSundayFulfillmentDate(date)
+    && now.getTime() >= Date.parse(`${date}T00:00:00+08:00`) - 86_400_000;
+}
+
 export function firstFulfillmentDate(now = new Date()) {
   const earliest = earliestOrderDate(now);
-  return isSundayFulfillmentDate(earliest)
+  return isSundayPreorderTooLate(earliest, now)
     ? phDate(new Date(Date.parse(`${earliest}T12:00:00+08:00`) + 86_400_000))
     : earliest;
 }
@@ -35,7 +40,7 @@ const PREVIEW_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'17:00'};
 export const DELIVERY_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'20:00'};
 
 export function availableSlots(date, now = new Date(), hours = PREVIEW_HOURS) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < earliestOrderDate(now) || isSundayFulfillmentDate(date)) return [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < earliestOrderDate(now) || isSundayPreorderTooLate(date, now)) return [];
   if (!hours || !Array.isArray(hours.days)) return [];
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   if (!hours.days.includes(weekday)) return [];

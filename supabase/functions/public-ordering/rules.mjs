@@ -27,9 +27,14 @@ export function isSundayFulfillmentDate(date) {
     && new Date(`${date}T12:00:00+08:00`).getUTCDay() === 0;
 }
 
+export function isSundayPreorderTooLate(date, now = new Date()) {
+  return isSundayFulfillmentDate(date)
+    && now.getTime() >= Date.parse(`${date}T00:00:00+08:00`) - 86_400_000;
+}
+
 export function isOrderDateAllowed(date, now = new Date()) {
   return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
-    && date >= earliestOrderDate(now) && !isSundayFulfillmentDate(date);
+    && date >= earliestOrderDate(now) && !isSundayPreorderTooLate(date, now);
 }
 
 export function validateSchedule(date, time, now = new Date()) {
