@@ -26,7 +26,7 @@ export function isSundayFulfillmentDate(date) {
 
 export function isSundayPreorderTooLate(date, now = new Date()) {
   return isSundayFulfillmentDate(date)
-    && now.getTime() >= Date.parse(`${date}T00:00:00+08:00`) - 86_400_000;
+    && now.getTime() >= Date.parse(`${date}T16:00:00+08:00`) - 2 * 86_400_000;
 }
 
 export function firstFulfillmentDate(now = new Date()) {

@@ -37,14 +37,14 @@ test('checkout slots match the four confirmed pickup schedules', () => {
   assert.deepEqual(availableSlots('2026-10-18',now,null),[]);
 });
 
-test('Sunday pre-orders remain open through Friday and close at Saturday midnight Manila time', () => {
+test('Sunday pre-orders close Friday at 4 PM Manila time', () => {
   const now = new Date('2026-10-29T19:18:00+08:00');
   assert.equal(availableSlots('2026-11-01', now, DELIVERY_HOURS)[0], '08:00');
   assert(validateSchedule('2026-11-01', '10:00', now));
-  assert.equal(firstFulfillmentDate(new Date('2026-10-30T23:59:59+08:00')), '2026-11-01');
-  assert.equal(isSundayPreorderTooLate('2026-11-01', new Date('2026-10-30T23:59:59+08:00')), false);
-  assert.equal(isSundayPreorderTooLate('2026-11-01', new Date('2026-10-31T00:00:00+08:00')), true);
-  assert.deepEqual(availableSlots('2026-11-01', new Date('2026-10-31T00:00:00+08:00'), DELIVERY_HOURS), []);
+  assert.equal(isSundayPreorderTooLate('2026-11-01', new Date('2026-10-30T15:59:59+08:00')), false);
+  assert.equal(isSundayPreorderTooLate('2026-11-01', new Date('2026-10-30T16:00:00+08:00')), true);
+  assert.deepEqual(availableSlots('2026-11-01', new Date('2026-10-30T16:00:00+08:00'), DELIVERY_HOURS), []);
+  assert.equal(firstFulfillmentDate(new Date('2026-10-30T17:00:00+08:00')), '2026-11-02');
   assert.equal(firstFulfillmentDate(new Date('2026-10-31T10:00:00+08:00')), '2026-11-02');
   const slots = availableSlots('2026-11-02', now, DELIVERY_HOURS);
   assert.equal(slots[0], '08:00');

@@ -199,7 +199,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
-    if (isSundayPreorderTooLate(body.date)) return reply(422, {ok:false, message:'Sunday pickup and delivery orders must be placed by Friday (Philippine time). Please choose another date or message Roma’s Donuts about Sunday availability.'})
+    if (isSundayPreorderTooLate(body.date)) return reply(422, {ok:false, message:'Sunday pickup and delivery orders close Friday at 4:00 PM Philippine time. Please choose another date or message Roma’s Donuts about Sunday availability.'})
     if (!isOrderDateAllowed(body.date)) return reply(422, {ok:false, message:'Same-day orders are unavailable. Order by 5:00 PM Philippine time for next-day pickup or delivery, or choose a later date.'})
     const forwardedIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || ''
     const ipLimit = forwardedIp

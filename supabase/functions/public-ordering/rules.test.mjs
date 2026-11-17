@@ -59,13 +59,13 @@ test('server enforces each pickup point’s Manila days and hours', () => {
   assert.equal(validatePickupSchedule('Dagupan City','2026-10-16','10:00',now),null);
 });
 
-test('Sunday orders need two calendar days of notice in Manila', () => {
+test('Sunday orders close Friday at 4 PM Manila time', () => {
   assert.equal(isSundayFulfillmentDate('2026-11-22'), true);
-  assert.equal(isSundayPreorderTooLate('2026-11-22', new Date('2026-11-20T15:59:59Z')), false);
-  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T15:59:59Z')), true);
-  assert.equal(isSundayPreorderTooLate('2026-11-22', new Date('2026-11-20T16:00:00Z')), true);
-  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T16:00:00Z')), false);
-  assert.equal(isOrderDateAllowed('2026-11-29', new Date('2026-11-20T16:00:00Z')), true);
+  assert.equal(isSundayPreorderTooLate('2026-11-22', new Date('2026-11-20T07:59:59Z')), false);
+  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T07:59:59Z')), true);
+  assert.equal(isSundayPreorderTooLate('2026-11-22', new Date('2026-11-20T08:00:00Z')), true);
+  assert.equal(isOrderDateAllowed('2026-11-22', new Date('2026-11-20T08:00:00Z')), false);
+  assert.equal(isOrderDateAllowed('2026-11-29', new Date('2026-11-20T08:00:00Z')), true);
   assert.equal(isOrderDateAllowed('2026-11-23', new Date('2026-11-20T09:00:00Z')), true);
 });
 
