@@ -33,7 +33,8 @@ import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
 import { getResellerPaymentParts, getResellerPaymentTotal } from './resellerPaymentSplit.js'
 import OutletPerformance from './OutletPerformance.jsx'
-import CrateRollingControl from './CrateRollingControl.jsx'
+import CrateInventory from './CrateInventory.jsx'
+import { crateRequest } from './crateInventory.js'
 import RollingCartLoans from './RollingCartLoans.jsx'
 import SagsInternalTransfers from './SagsInternalTransfers.jsx'
 import { isSagsTransferSchemaMissing, sagsTransfersAsForecastDeliveries } from './sagsTransferForecast.js'
@@ -17455,7 +17456,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  async function openInvoiceSettlement(inv) {
  if (showPaymentFormMap[inv.id]) { setShowPaymentFormMap(p=>({...p,[inv.id]:false})); return }
- const crateLedgerAvailable = !!(await loadCrateMovements())
+ const crateLedgerAvailable = true
  let rows = buildInvoiceSettlementRows(inv)
  try {
  const { data } = await supabase.from('reseller_returns').select('id, reseller_return_items(*)').eq('invoice_id', inv.id)
@@ -17469,49 +17470,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  return {...r, returned_quantity:Math.min(safeNum(r.actual_quantity,0), safeNum(returned[key],0))}
  })
  } catch(e) { console.warn('openInvoiceSettlement existing returns:', e) }
- let crateDefaults = {
- delivered:'',
- returned:'',
- coverDelivered:'',
- coverReturned:'',
- dispatcher:'',
- driver:'',
- notes:'',
- confirmed:false,
- ledgerAvailable:crateLedgerAvailable
- }
- try {
- const { data:invoiceCrates, error:crateErr } = await supabase
- .from('crate_movements')
- .select('*')
- .eq('invoice_id', inv.id)
- .eq('is_deleted', false)
- if (!crateErr && Array.isArray(invoiceCrates) && invoiceCrates.length) {
- const releasedRows = invoiceCrates.filter(m => getCrateMovementSignedQty(m) > 0)
- const collectedRows = invoiceCrates.filter(m => getCrateMovementSignedQty(m) < 0)
- const crateReleasedRows = releasedRows.filter(m => getCrateAssetType(m) === 'crate')
- const crateCollectedRows = collectedRows.filter(m => getCrateAssetType(m) === 'crate')
- const coverReleasedRows = releasedRows.filter(m => getCrateAssetType(m) === 'cover')
- const coverCollectedRows = collectedRows.filter(m => getCrateAssetType(m) === 'cover')
- const delivered = crateReleasedRows.reduce((sum,m)=>sum + safeNum(m.quantity,0),0)
- const returned = crateCollectedRows.reduce((sum,m)=>sum + safeNum(m.quantity,0),0)
- const coverDelivered = coverReleasedRows.reduce((sum,m)=>sum + safeNum(m.quantity,0),0)
- const coverReturned = coverCollectedRows.reduce((sum,m)=>sum + safeNum(m.quantity,0),0)
- const latestReleased = releasedRows[0] || {}
- const latestCollected = collectedRows[0] || {}
- crateDefaults = {
- delivered:delivered || '',
- returned:returned || '',
- coverDelivered:coverDelivered || '',
- coverReturned:coverReturned || '',
- dispatcher:latestReleased.dispatcher_name || '',
- driver:latestCollected.driver_name || '',
- notes:[latestReleased.notes, latestCollected.notes].filter(Boolean).join(' | ').slice(0, 180),
- confirmed:false,
- ledgerAvailable:crateLedgerAvailable
- }
- }
- } catch(e) { console.warn('openInvoiceSettlement existing crates:', e) }
+ const crateDefaults = { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', reference:'1', notes:'', requestId:crypto.randomUUID(), confirmed:false, ledgerAvailable:crateLedgerAvailable }
  setSettlementRows(p=>({...p,[inv.id]:rows}))
  setSettlementCrates(p=>({...p,[inv.id]:crateDefaults}))
  setPaymentAmount(p=>({...p,[inv.id]:p[inv.id] || ''}))
@@ -17541,40 +17500,8 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
 
  function getSettlementCrateSummary(inv) {
- const data = settlementCrates[inv.id] || {}
- const delivered = Math.max(0, safeNum(data.delivered, 0))
- const returned = Math.max(0, safeNum(data.returned, 0))
- const coverDelivered = Math.max(0, safeNum(data.coverDelivered, 0))
- const coverReturned = Math.max(0, safeNum(data.coverReturned, 0))
- const variance = moneyRound(delivered - returned)
- const coverVariance = moneyRound(coverDelivered - coverReturned)
- const invoiceMovements = (crateMovements || []).filter(m => String(m.invoice_id || '') === String(inv.id) && m.is_deleted !== true)
- const existingNet = invoiceMovements.filter(m => getCrateAssetType(m) === 'crate').reduce((sum,m)=>sum + getCrateMovementSignedQty(m),0)
- const existingCoverNet = invoiceMovements.filter(m => getCrateAssetType(m) === 'cover').reduce((sum,m)=>sum + getCrateMovementSignedQty(m),0)
- const resellerRow = getCrateBalanceRows(true).find(r => String(r.reseller_id) === String(inv.reseller_id || ''))
- const currentBalance = safeNum(resellerRow?.crateBalance ?? resellerRow?.balance, 0)
- const currentCoverBalance = safeNum(resellerRow?.coverBalance, 0)
- const projectedBalance = moneyRound(currentBalance - existingNet + variance)
- const projectedCoverBalance = moneyRound(currentCoverBalance - existingCoverNet + coverVariance)
- const statusParts = []
- statusParts.push(variance > 0 ? `${variance} crates unreturned` : variance < 0 ? `${Math.abs(variance)} extra crates returned` : 'Crates clear')
- statusParts.push(coverVariance > 0 ? `${coverVariance} covers unreturned` : coverVariance < 0 ? `${Math.abs(coverVariance)} extra covers returned` : 'Covers clear')
- return {
- delivered,
- returned,
- coverDelivered,
- coverReturned,
- variance,
- coverVariance,
- existingNet,
- existingCoverNet,
- currentBalance,
- currentCoverBalance,
- projectedBalance,
- projectedCoverBalance,
- hasEntry:delivered > 0 || returned > 0 || coverDelivered > 0 || coverReturned > 0,
- status:statusParts.join(' / ')
- }
+ const entry=settlementCrates[inv.id] || {}
+ return {delivered:0, returned:Number(entry.returned||0), coverDelivered:0, coverReturned:Number(entry.coverReturned||0),variance:0,hasEntry:Number(entry.returned||0)>0 || Number(entry.coverReturned||0)>0}
  }
 
  function wholeCrateQuantity(value, label) {
@@ -17584,33 +17511,16 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
 
  async function reconcileInvoiceCrateHandovers(inv, quantities, notes = '') {
- const { data, error } = await supabase.rpc('crate_reconcile_invoice_handovers', {
- p_invoice_id:inv.id,
- p_crates_delivered:quantities.delivered ?? null,
- p_crates_collected:quantities.returned ?? null,
- p_covers_delivered:quantities.coverDelivered ?? null,
- p_covers_collected:quantities.coverReturned ?? null,
- p_dispatcher_name:quantities.dispatcher || '',
- p_driver_name:quantities.driver || '',
- p_recorded_by:currentAdminLabel || adminRole || 'Admin',
- p_notes:String(notes || '').trim()
- })
- if (error) throw error
- await loadCrateMovements()
- return data || { changed:false }
+ // Dispatch is a one-time, idempotent entry for this invoice in the new cycle.
+ const {data,error}=await supabase.rpc('crate_inventory_save',crateRequest({action:'dispatch',resellerId:inv.reseller_id,crates:quantities.delivered,covers:quantities.coverDelivered||0,day:today,driver:currentAdminLabel || 'Dispatcher',reference:inv.invoice_number || inv.id,notes,invoiceId:inv.id,requestId:inv.id}))
+ if(error)throw error
+ return {...data,changed:!data.duplicate}
  }
-
  async function syncInvoiceSettlementCrates(inv) {
- const entry = settlementCrates[inv.id] || {}
- const result = await reconcileInvoiceCrateHandovers(inv, {
- delivered:wholeCrateQuantity(entry.delivered, 'Crates delivered'),
- returned:wholeCrateQuantity(entry.returned, 'Crates collected'),
- coverDelivered:wholeCrateQuantity(entry.coverDelivered, 'Covers delivered'),
- coverReturned:wholeCrateQuantity(entry.coverReturned, 'Covers collected'),
- dispatcher:String(entry.dispatcher || '').trim(),
- driver:String(entry.driver || '').trim()
- }, entry.notes || 'Confirmed in invoice settlement')
- return { ok:true, saved:result.changed === true, summary:getSettlementCrateSummary(inv) }
+ const entry=settlementCrates[inv.id] || {}
+ const {data,error}=await supabase.rpc('crate_inventory_save',crateRequest({action:'collection',resellerId:inv.reseller_id,crates:entry.returned,covers:entry.coverReturned,day:today,driver:entry.driver||'',reference:entry.reference||'1',notes:entry.notes||'Received in production during settlement',invoiceId:inv.id,requestId:entry.requestId}))
+ if(error)throw error
+ return {ok:true,saved:!data.duplicate,summary:getSettlementCrateSummary(inv)}
  }
 
  function getSettlementSummary(inv, rowsArg = null) {
@@ -17660,12 +17570,12 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  const crateSummary = getSettlementCrateSummary(inv)
  const crateEntry = settlementCrates[inv.id] || {}
  if (summary.cashReceived > summary.dueBeforeCash) { showToast(` Amount received exceeds final balance of ${php(summary.dueBeforeCash)}.`, 'red'); return }
- if (crateEntry.confirmed) {
- if (crateEntry.ledgerAvailable === false) { showToast('Crate records could not be verified. Save payment without crate confirmation, or refresh and retry.','red'); return }
+ if (crateSummary.hasEntry) {
+ if (!crateEntry.requestId) { showToast('Crate records could not be verified. Save payment without crate confirmation, or refresh and retry.','red'); return }
  try {
- wholeCrateQuantity(crateEntry.delivered, 'Crates delivered')
+ if (!inv.reseller_id) throw new Error('Crate collection requires a reseller invoice.')
+ if (String(crateEntry.driver||'').trim().length<2 || !String(crateEntry.reference||'').trim()) throw new Error('Enter the driver and trip/list reference.')
  wholeCrateQuantity(crateEntry.returned, 'Crates collected')
- wholeCrateQuantity(crateEntry.coverDelivered, 'Covers delivered')
  wholeCrateQuantity(crateEntry.coverReturned, 'Covers collected')
  } catch (validationError) { showToast(validationError.message, 'red'); return }
  }
@@ -17680,7 +17590,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  let invoiceSaved = false
  let crateSyncResult = { ok:true, saved:false }
  try {
- if (crateEntry.confirmed) crateSyncResult = await syncInvoiceSettlementCrates(inv)
+ if (crateSummary.hasEntry) crateSyncResult = await syncInvoiceSettlementCrates(inv)
  const { data:oldReturns } = await supabase.from('reseller_returns').select('id').eq('invoice_id', inv.id)
  const oldIds = (oldReturns || []).map(r => r.id).filter(Boolean)
  if (oldIds.length) { await supabase.from('reseller_return_items').delete().in('return_id', oldIds); await supabase.from('reseller_returns').delete().in('id', oldIds) }
@@ -17710,10 +17620,10 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
  if (invoiceErr) throw invoiceErr
  invoiceSaved = true
- const crateAuditText = crateEntry.confirmed ? `, crates delivered ${crateSummary.delivered}, crates returned ${crateSummary.returned}, crate variance ${crateSummary.variance}` : ''
+ const crateAuditText = crateSummary.hasEntry ? `, crates delivered ${crateSummary.delivered}, crates returned ${crateSummary.returned}, crate variance ${crateSummary.variance}` : ''
  await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, received ${php(summary.cashReceived)}${paymentParts.length ? ` (${paymentParts.map(part => `${part.method} ${php(part.amount)}`).join(' + ')})` : ''}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}${crateAuditText}`)
  const settlementMessage = summary.newStatus === 'paid' ? ` Settlement saved. ${inv.reseller_name} is fully paid.` : ` Settlement saved. Remaining balance: ${php(summary.finalBalance)}`
- const crateMessage = crateEntry.confirmed ? ` Crate handover confirmed: delivered ${crateSummary.delivered}, collected ${crateSummary.returned}.` : ''
+ const crateMessage = crateSummary.hasEntry ? ` Crate handover confirmed: delivered ${crateSummary.delivered}, collected ${crateSummary.returned}.` : ''
  showToast(settlementMessage + crateMessage, 'green')
  setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
  setPaymentAmount(p=>({...p,[inv.id]:''}))
@@ -43909,323 +43819,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  )}
 
- {/* CRATES CONTROL */}
- {activeTab==='crates' && <CrateRollingControl supabase={supabase} resellers={resellers} movements={crateMovements} movementsReady={crateMovementsLoaded} today={today} adminRole={adminRole} recordedBy={currentAdminLabel} onMovementSaved={loadCrateMovements} />}
- {activeTab==='crates' && <details style={{ background:'#fff', border:'1px solid #e6e6e6', borderRadius:12, padding:'12px 14px', marginBottom:14 }}>
- <summary style={{ cursor:'pointer', fontWeight:700, color:'#333' }}>Record dispatch / collection and view detailed history</summary>
- {/* Crates Inventory / Reseller Variance View */}
- {activeTab==='crates' && (() => {
- const crateData = getCrateDashboardData()
- const selectedCollectionRow = crateData.allRows.find(r => String(r.reseller_id) === String(crateCollectionResellerId))
- const selectedCollectionBalance = Math.max(0, safeNum(selectedCollectionRow?.crateBalance ?? selectedCollectionRow?.balance, 0))
- const selectedCollectionCoverBalance = Math.max(0, safeNum(selectedCollectionRow?.coverBalance, 0))
- const collectionRemainingAfterEntry = selectedCollectionBalance - safeNum(crateCollectedQty, 0)
- const coverCollectionRemainingAfterEntry = selectedCollectionCoverBalance - safeNum(crateCoverCollectedQty, 0)
- const dispatchReseller = getResellerRecordById(crateDispatchResellerId)
- const dispatchInvoices = (deliveryInvoices || []).filter(inv => {
- const sameReseller = !crateDispatchResellerId || String(inv.reseller_id || '') === String(crateDispatchResellerId) || String(inv.reseller_name || '').toLowerCase() === String(dispatchReseller?.name || '').toLowerCase()
- const sameDate = !crateDispatchDate || String(inv.delivery_date || inv.invoice_date || '').slice(0,10) === crateDispatchDate
- return sameReseller && sameDate
- }).slice(0, 50)
- const visibleMovements = (crateMovements || []).filter(m => {
- const q = String(crateSearch || '').trim().toLowerCase()
- if (!q) return true
- return String(m.reseller_name || '').toLowerCase().includes(q) || String(m.invoice_number || '').toLowerCase().includes(q) || String(m.notes || '').toLowerCase().includes(q)
- }).slice(0, 150)
- if (!crateMovementsLoaded) return <div role="status" style={{ background:'#fff8e1', border:'1px solid #e5a000', borderRadius:'10px', padding:'14px', marginBottom:'14px' }}>{cratesLoadError || 'Loading the complete crate movement ledger before showing legacy balances and entry forms...'}</div>
- return (
- <div>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'14px' }}>
- <div>
- <h3 style={{ color:'#ca1b1b', fontSize:'15px', margin:'0 0 4px' }}>Crates & Covers Inventory / Reseller Variance</h3>
- <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Historical movement ledger. Use the approved rolling counts above for a verified location baseline.</p>
- </div>
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); showToast(' Crates refreshed!') }}>REFRESH CRATES</button>
- <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={exportCrateBalancesCSV}>EXPORT CSV</button>
- </div>
- </div>
-
- <div style={{ background:'#fff8e1', border:'1px solid #e5a000', borderRadius:'10px', padding:'10px', marginBottom:'14px', fontSize:'12px', color:'#674300' }}>
- <strong>Legacy figures are unverified.</strong> The recorded movements have a gap after July 2026. These totals cannot prove current company stock or missing crates. Continue recording every dispatch and collection, then reconcile each outlet against its approved count.
- </div>
- {cratesLoadError && (
- <div style={{ background:'#fff5f5', border:'1px solid #ffcdd2', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px' }}>Supabase setup needed</p>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>{cratesLoadError}</p>
- </div>
- )}
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(8,1fr)', gap:'10px', marginBottom:'14px' }}>
- {[
- { label:'Legacy crates owned', value:crateData.totalCompanyCrates, sub:'Unverified old ledger', color:'#1a1a2e', bg:'#f4f4f8' },
- { label:'Estimated crates in-house', value:crateData.availableCrates, sub:'Unverified estimate', color:crateData.availableCrates < 0 ? '#ca1b1b' : '#2d8a4e', bg:crateData.availableCrates < 0 ? '#fff5f5' : '#f0fff4' },
- { label:'Legacy crates w/ resellers', value:crateData.totalWithResellers, sub:'Unverified old balance', color:crateData.totalWithResellers>0?'#ca1b1b':'#2d8a4e', bg:crateData.totalWithResellers>0?'#fff5f5':'#f0fff4' },
- { label:'Legacy covers owned', value:crateData.totalCompanyCovers, sub:'Unverified old ledger', color:'#1a1a2e', bg:'#f4f4f8' },
- { label:'Estimated covers in-house', value:crateData.availableCovers, sub:'Unverified estimate', color:crateData.availableCovers < 0 ? '#ca1b1b' : '#2d8a4e', bg:crateData.availableCovers < 0 ? '#fff5f5' : '#f0fff4' },
- { label:'Legacy covers w/ resellers', value:crateData.totalCoversWithResellers, sub:'Unverified old balance', color:crateData.totalCoversWithResellers>0?'#ca1b1b':'#2d8a4e', bg:crateData.totalCoversWithResellers>0?'#fff5f5':'#f0fff4' },
- { label:'Crates Released', value:crateData.totalReleased, sub:'All dispatch records', color:'#4a90d9', bg:'#e8f0fe' },
- { label:'Resellers w/ Balance', value:crateData.resellersWithBalance, sub:'Need follow-up', color:crateData.resellersWithBalance>0?'#f57c00':'#2d8a4e', bg:'#fff8e1' },
- ].map(c => (
- <div key={c.label} style={{ background:c.bg, border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'12px' }}>
- <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px', fontWeight:'bold' }}>{c.label}</p>
- <p style={{ color:c.color, fontWeight:'bold', fontSize:'22px', margin:'0 0 2px' }}>{c.value}</p>
- <p style={{ color:'#999', fontSize:'10px', margin:0 }}>{c.sub}</p>
- </div>
- ))}
- </div>
-
- <div style={{ background:'#f8fbff', border:'2px solid #dbe7ff', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
- <div>
- <p style={{ color:'#1a1a2e', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>Company Crate & Cover Stock Control</p>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Use this to set total crates/covers owned by the company, add newly purchased items, or deduct damaged/lost items.</p>
- </div>
- <div style={{ textAlign:'right' }}>
- <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', fontWeight:'bold' }}>Current Selected Count</p>
- <p style={{ color:'#1a1a2e', fontSize:'24px', fontWeight:'bold', margin:0 }}>{companyCrateAssetType === 'cover' ? crateData.totalCompanyCovers : crateData.totalCompanyCrates}</p>
- </div>
- </div>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1.4fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
- <div>
- <label style={lblS}>Date:</label>
- <input type="date" value={companyCrateDate} onChange={e=>setCompanyCrateDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Item:</label>
- <select value={companyCrateAssetType} onChange={e=>setCompanyCrateAssetType(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- <option value="crate">Plastic Crates</option>
- <option value="cover">Crate Covers</option>
- </select>
- </div>
- <div>
- <label style={lblS}>Action:</label>
- <select value={companyCrateAction} onChange={e=>setCompanyCrateAction(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- <option value="add_purchased">Add newly purchased selected item</option>
- <option value="correction_increase">Correction increase</option>
- <option value="deduct_damaged">Deduct damaged selected item</option>
- <option value="deduct_lost">Deduct lost selected item</option>
- <option value="correction_decrease">Correction decrease</option>
- </select>
- </div>
- <div>
- <label style={lblS}>{companyCrateAction === 'set_exact' ? 'New Total Count:' : 'Qty:'}</label>
- <input type="number" min="0" step="1" value={companyCrateQty} onChange={e=>setCompanyCrateQty(e.target.value)} placeholder={companyCrateAction === 'set_exact' ? 'e.g. 300' : 'e.g. 20'} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Notes / OR / Approval Details:</label>
- <input value={companyCrateNotes} onChange={e=>setCompanyCrateNotes(e.target.value)} placeholder="Example: bought 50 crate covers / 3 damaged crates approved by owner" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <button style={{...btnBlack, marginTop:0, whiteSpace:'nowrap' }} onClick={saveCompanyCrateStockAdjustment}>SAVE STOCK</button>
- </div>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'8px', marginTop:'12px' }}>
- <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>TOTAL CRATES OWNED</p><p style={{ color:'#1a1a2e', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.totalCompanyCrates}</p></div>
- <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>TOTAL COVERS OWNED</p><p style={{ color:'#1a1a2e', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.totalCompanyCovers}</p></div>
- <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>CRATES WITH RESELLERS</p><p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.totalWithResellers}</p></div>
- <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>COVERS WITH RESELLERS</p><p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.totalCoversWithResellers}</p></div>
- </div>
- {(crateData.availableCrates < 0 || crateData.availableCovers < 0) && (
- <div style={{ background:'#fff5f5', border:'1px solid #ffcdd2', borderRadius:'10px', padding:'10px', marginTop:'10px' }}>
- <p style={{ color:'#ca1b1b', fontSize:'12px', fontWeight:'bold', margin:0 }}>Warning: items with resellers are higher than company-owned count. Set the exact company count or review old crate/cover records.</p>
- </div>
- )}
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'16px' }}>
- {/* Dispatcher Release Form */}
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>1. Dispatcher Records Crates & Covers Used</p>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}>Use this after packing/dispatch when the real crate count is already known.</p>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
- <div>
- <label style={lblS}>Dispatch / Delivery Date:</label>
- <input type="date" value={crateDispatchDate} onChange={e=>setCrateDispatchDate(e.target.value)} style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Reseller:</label>
- <select value={crateDispatchResellerId} onChange={e=>{ setCrateDispatchResellerId(e.target.value); setCrateDispatchInvoiceId('') }} style={inputStyle}>
- <option value="">Select reseller</option>
- {(resellers || []).map(r => <option key={r.id} value={r.id}>{r.name} {r.area ? `- ${r.area}` : ''}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Related Invoice <span style={{ color:'#999', fontWeight:'normal' }}>(optional)</span>:</label>
- <select value={crateDispatchInvoiceId} onChange={e=>setCrateDispatchInvoiceId(e.target.value)} style={inputStyle}>
- <option value="">No specific invoice</option>
- {dispatchInvoices.map(inv => <option key={inv.id} value={inv.id}>{inv.invoice_number || inv.id} - {php(inv.total_amount || inv.total_sales || 0)}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Crates Released:</label>
- <input type="number" min="0" step="1" value={crateReleasedQty} onChange={e=>setCrateReleasedQty(e.target.value)} placeholder="e.g. 8" style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Crate Covers Released:</label>
- <input type="number" min="0" step="1" value={crateCoverReleasedQty} onChange={e=>setCrateCoverReleasedQty(e.target.value)} placeholder="e.g. 8" style={inputStyle} />
- </div>
- </div>
- <label style={lblS}>Dispatcher Name / Initial:</label>
- <input value={crateDispatcherName} onChange={e=>setCrateDispatcherName(e.target.value)} placeholder="e.g. Ana / AG" style={inputStyle} />
- <label style={lblS}>Dispatch Notes:</label>
- <textarea value={crateDispatchNotes} onChange={e=>setCrateDispatchNotes(e.target.value)} placeholder="Optional notes, e.g. 2 crates are mixed boxes." style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
- <button style={btnGreen} onClick={saveCrateDispatch}>SAVE CRATES / COVERS RELEASED</button>
- </div>
-
- {/* Driver Collection Form */}
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>2. Driver Records Crates & Covers Collected</p>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}>Use this the next day or anytime crates/covers are returned. It reduces the reseller's running balance.</p>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
- <div>
- <label style={lblS}>Collection Date:</label>
- <input type="date" value={crateCollectionDate} onChange={e=>setCrateCollectionDate(e.target.value)} style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Related Delivery Date:</label>
- <input type="date" value={crateCollectionDeliveryDate} onChange={e=>setCrateCollectionDeliveryDate(e.target.value)} style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Reseller:</label>
- <select value={crateCollectionResellerId} onChange={e=>setCrateCollectionResellerId(e.target.value)} style={inputStyle}>
- <option value="">Select reseller</option>
- {crateData.allRows.map(r => <option key={r.reseller_id} value={r.reseller_id}>{r.reseller_name} - Crates: {Math.max(0, safeNum(r.crateBalance,0))} / Covers: {Math.max(0, safeNum(r.coverBalance,0))}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Crates Collected:</label>
- <input type="number" min="0" step="1" value={crateCollectedQty} onChange={e=>setCrateCollectedQty(e.target.value)} placeholder="e.g. 6" style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Crate Covers Collected:</label>
- <input type="number" min="0" step="1" value={crateCoverCollectedQty} onChange={e=>setCrateCoverCollectedQty(e.target.value)} placeholder="e.g. 6" style={inputStyle} />
- </div>
- </div>
- {crateCollectionResellerId && (
- <div style={{ background:(collectionRemainingAfterEntry>0 || coverCollectionRemainingAfterEntry>0)?'#fff8e1':'#f0fff4', border:`1px solid ${(collectionRemainingAfterEntry>0 || coverCollectionRemainingAfterEntry>0)?'#f5a623':'#2d8a4e'}`, borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 3px', color:'#555', fontSize:'12px' }}>Current expected from this reseller: <strong style={{ color:'#ca1b1b' }}>{selectedCollectionBalance}</strong> crate(s) and <strong style={{ color:'#ca1b1b' }}>{selectedCollectionCoverBalance}</strong> cover(s)</p>
- <p style={{ margin:0, color:(collectionRemainingAfterEntry>0 || coverCollectionRemainingAfterEntry>0)?'#f57c00':'#2d8a4e', fontSize:'12px', fontWeight:'bold' }}>Balance after this collection: {collectionRemainingAfterEntry} crate(s), {coverCollectionRemainingAfterEntry} cover(s)</p>
- </div>
- )}
- <label style={lblS}>Driver / Delivery Assistant Name:</label>
- <input value={crateDriverName} onChange={e=>setCrateDriverName(e.target.value)} placeholder="e.g. Driver name / initials" style={inputStyle} />
- <label style={lblS}>Collection Notes:</label>
- <textarea value={crateCollectionNotes} onChange={e=>setCrateCollectionNotes(e.target.value)} placeholder="Optional notes, e.g. 2 crates left at outlet." style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
- <button style={btnGreen} onClick={saveCrateCollection}>SAVE CRATES / COVERS COLLECTED</button>
- </div>
- </div>
-
- {/* Manual Adjustment */}
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>Manual Crate / Cover Adjustment</p>
- <p style={{ color:'#666', fontSize:'12px', margin:'0 0 12px' }}>Use only for corrections, lost/damaged crates or covers, or returns from older balances.</p>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(6,1fr)', gap:'10px', alignItems:'end' }}>
- <div>
- <label style={lblS}>Date:</label>
- <input type="date" value={crateAdjustmentDate} onChange={e=>setCrateAdjustmentDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Reseller:</label>
- <select value={crateAdjustmentResellerId} onChange={e=>setCrateAdjustmentResellerId(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- <option value="">Select reseller</option>
- {(resellers || []).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Item:</label>
- <select value={crateAdjustmentAssetType} onChange={e=>setCrateAdjustmentAssetType(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- <option value="crate">Plastic Crates</option>
- <option value="cover">Crate Covers</option>
- </select>
- </div>
- <div>
- <label style={lblS}>Action:</label>
- <select value={crateAdjustmentDirection} onChange={e=>setCrateAdjustmentDirection(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- <option value="reduce_balance">Reduce reseller balance</option>
- <option value="add_balance">Add to reseller balance</option>
- </select>
- </div>
- <div>
- <label style={lblS}>Qty:</label>
- <input type="number" min="0" step="1" value={crateAdjustmentQty} onChange={e=>setCrateAdjustmentQty(e.target.value)} placeholder="Qty" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <button style={{...btnBlack, marginTop:0 }} onClick={saveCrateAdjustment}>SAVE ADJUSTMENT</button>
- </div>
- </div>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 2fr', gap:'10px', marginTop:'10px' }}>
- <select value={crateAdjustmentReason} onChange={e=>setCrateAdjustmentReason(e.target.value)} style={inputStyle}>
- {['Correction','Lost crate / cover','Damaged crate / cover','Late return from old balance','Wrong entry correction','Owner-approved write-off','Other'].map(r => <option key={r} value={r}>{r}</option>)}
- </select>
- <input value={crateAdjustmentNotes} onChange={e=>setCrateAdjustmentNotes(e.target.value)} placeholder="Adjustment notes / approval details" style={inputStyle} />
- </div>
- </div>
-
- {/* Reseller Balances */}
- <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
- <div>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 2px' }}>Reseller Crate & Cover Balances</p>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Positive balance means crates or covers are still with the reseller.</p>
- </div>
- <input value={crateSearch} onChange={e=>setCrateSearch(e.target.value)} placeholder="Search reseller, invoice, notes..." style={{...inputStyle, maxWidth:'280px', marginBottom:0 }} />
- </div>
- {cratesLoading ? <p style={{ color:'#888', textAlign:'center', padding:'20px' }}>Loading crate records...</p> : (
- <div style={{ overflowX:'auto' }}>
- <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
- <thead>
- <tr style={{ background:'#ca1b1b', color:'white' }}>
- {['Reseller','Crates Released','Crates Collected','Crates Unreturned','Covers Released','Covers Collected','Covers Unreturned','Last Movement','Status'].map(h => <th key={h} style={{ padding:'9px', textAlign:h==='Reseller'?'left':'center' }}>{h}</th>)}
- </tr>
- </thead>
- <tbody>
- {crateData.rows.length === 0 && (
- <tr><td colSpan={9} style={{ padding:'18px', textAlign:'center', color:'#888' }}>No crate/cover balance records yet.</td></tr>
- )}
- {crateData.rows.map((r,idx) => {
- const balance = safeNum(r.crateBalance ?? r.balance,0)
- const coverBalance = safeNum(r.coverBalance,0)
- const hasBalance = balance > 0 || coverBalance > 0
- return (
- <tr key={r.reseller_id} style={{ background:idx%2===0?'white':'#fafafa', borderBottom:'1px solid #eee' }}>
- <td style={{ padding:'9px', fontWeight:'bold', color:'#333' }}>{r.reseller_name}<br/><span style={{ color:'#999', fontWeight:'normal', fontSize:'10px' }}>{r.area || ''}</span></td>
- <td style={{ padding:'9px', textAlign:'center' }}>{r.cratesReleased}</td>
- <td style={{ padding:'9px', textAlign:'center', color:'#2d8a4e', fontWeight:'bold' }}>{r.cratesCollected}</td>
- <td style={{ padding:'9px', textAlign:'center', fontWeight:'bold', color:balance>0?'#ca1b1b':'#2d8a4e', fontSize:'15px' }}>{balance}</td>
- <td style={{ padding:'9px', textAlign:'center' }}>{r.coversReleased}</td>
- <td style={{ padding:'9px', textAlign:'center', color:'#2d8a4e', fontWeight:'bold' }}>{r.coversCollected}</td>
- <td style={{ padding:'9px', textAlign:'center', fontWeight:'bold', color:coverBalance>0?'#ca1b1b':'#2d8a4e', fontSize:'15px' }}>{coverBalance}</td>
- <td style={{ padding:'9px', textAlign:'center', color:'#777' }}>{r.last_movement ? `${r.last_movement.movement_date || ''} / ${String(r.last_movement.movement_type || '').replace(/_/g,' ')} / ${getCrateAssetLabel(getCrateAssetType(r.last_movement))}` : '-'}</td>
- <td style={{ padding:'9px', textAlign:'center' }}><Badge label={hasBalance?'UNRETURNED':'CLEAR'} color={hasBalance?'red':'green'} /></td>
- </tr>
- )
- })}
- </tbody>
- </table>
- </div>
- )}
- </div>
-
- {/* Movement History */}
- <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 12px' }}>Crate / Cover Movement History</p>
- {visibleMovements.length === 0 ? <p style={{ color:'#888', textAlign:'center', padding:'18px' }}>No crate/cover movements recorded yet.</p> : visibleMovements.map(m => {
- const signed = getCrateMovementSignedQty(m)
- return (
- <div key={m.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1.3fr .8fr .8fr 2fr', gap:'8px', alignItems:'center', borderBottom:'1px solid #f0f0f0', padding:'9px 0' }}>
- <div><p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px', color:'#333' }}>{m.movement_date}</p><p style={{ color:'#999', fontSize:'10px', margin:0 }}>{m.related_delivery_date ? `Delivery: ${m.related_delivery_date}` : 'No delivery date'}</p></div>
- <div><p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px', color:'#333' }}>{m.reseller_name}</p><p style={{ color:'#999', fontSize:'10px', margin:0 }}>{m.invoice_number || 'No invoice linked'}</p></div>
- <div><Badge label={`${getCrateAssetLabel(getCrateAssetType(m), false).toUpperCase()} / ${String(m.movement_type || '').replace(/_/g,' ').toUpperCase()}`} color={signed>=0?'blue':'green'} /></div>
- <div style={{ fontWeight:'bold', color:signed>=0?'#ca1b1b':'#2d8a4e', fontSize:'15px' }}>{signed>0?'+':''}{signed}</div>
- <div><p style={{ color:'#666', fontSize:'11px', margin:'0 0 2px' }}>{m.notes || '-'}</p><p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{m.dispatcher_name ? `Dispatcher: ${m.dispatcher_name}` : ''} {m.driver_name ? `Driver: ${m.driver_name}` : ''}</p></div>
- </div>
- )
- })}
- </div>
- </div>
- )
- })()}
- </details>}
-
+ {/* CRATES CONTROL — one active inventory table */}
+ {activeTab==='crates' && <CrateInventory client={supabase} resellers={resellers} today={today} adminRole={adminRole} onSettle={outlet=>{setActiveTab('sales');setSalesView('receivables');setReceivableOutlet({id:outlet.id,name:outlet.name});setInvoiceFilter('all');setInvoiceSearchTerm('')}} />}
 
  {/* COSTING OWNER ONLY */}
  {activeTab==='costing' && (
@@ -47650,9 +47245,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
- {displayStatus!=='paid' && (
+ {(
  <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
- {showPaymentFormMap[inv.id]?' CANCEL SETTLEMENT':' RECORD PAYMENT'}
+ {showPaymentFormMap[inv.id]?' CANCEL SETTLEMENT':' RETURNS / PAYMENT / CRATES'}
  </button>
  )}
  </div>
@@ -47696,59 +47291,18 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </tr>
  })}
  <tr style={{ background:'#f7f7f7', fontWeight:'bold' }}><td style={{ padding:'8px' }}>TOTAL DONUTS</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.originalQty}</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.actualQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#ca1b1b' }}>{summary.returnedQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#2d8a4e' }}>{summary.billableQty}</td><td></td><td style={{ padding:'8px', textAlign:'right' }}>{php(summary.finalTotal)}</td></tr>
- <tr style={{ background:'#fff8dc', borderTop:'2px solid #FDD412' }}>
- <td colSpan={7} style={{ padding:'9px 8px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
- <span style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'12px' }}>CRATES & COVERS SETTLEMENT — same reseller, same invoice</span>
- <span style={{ background:(crateSummary.variance>0 || crateSummary.coverVariance>0)?'#fff5f5':(crateSummary.variance<0 || crateSummary.coverVariance<0)?'#e8f0fe':'#f0fff4', color:(crateSummary.variance>0 || crateSummary.coverVariance>0)?'#ca1b1b':(crateSummary.variance<0 || crateSummary.coverVariance<0)?'#4a90d9':'#2d8a4e', border:`1px solid ${(crateSummary.variance>0 || crateSummary.coverVariance>0)?'#ca1b1b33':(crateSummary.variance<0 || crateSummary.coverVariance<0)?'#4a90d933':'#2d8a4e33'}`, borderRadius:'20px', padding:'4px 10px', fontSize:'11px', fontWeight:'bold' }}>{crateSummary.status}</span>
+ {inv.reseller_id && <tr style={{background:'#fff8dc',borderTop:'2px solid #FDD412'}}>
+ <td colSpan={7} style={{padding:12}}>
+ <strong>Crates returned to production — this pickup only</strong>
+ <p style={{fontSize:12,margin:'6px 0'}}>Use the driver’s per-outlet list. Enter the pickup once, even if paying several invoices. Leave quantities at zero when nothing was collected.</p>
+ <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10}}>
+ {[['returned','Crates collected'],['coverReturned','Covers collected']].map(([field,label])=><label key={field}>{label}<input aria-label={label} type="number" min="0" step="1" value={crateEntry[field]||''} onChange={e=>updateSettlementCrates(inv.id,field,e.target.value)} style={{...inputStyle,marginBottom:0}} placeholder="0" /></label>)}
+ <label>Driver<input aria-label="Collection driver" value={crateEntry.driver||''} onChange={e=>updateSettlementCrates(inv.id,'driver',e.target.value)} style={{...inputStyle,marginBottom:0}} /></label>
+ <label>Trip / list reference<input aria-label="Collection trip reference" value={crateEntry.reference||'1'} onChange={e=>updateSettlementCrates(inv.id,'reference',e.target.value)} style={{...inputStyle,marginBottom:0}} /></label>
  </div>
- </td>
- </tr>
- <tr style={{ background:'#f8fbff', borderBottom:'1px solid #e8eef8' }}>
- <td style={{ padding:'8px', fontWeight:'900', color:'#333' }}>Plastic Crates</td>
- <td style={{ padding:'8px', textAlign:'right', color:'#777', fontWeight:'bold' }}>Crates</td>
- <td style={{ padding:'8px', textAlign:'right' }}>
- <input type="number" min="0" step="1" value={crateEntry.delivered} onChange={e=>updateSettlementCrates(inv.id, 'delivered', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #4a90d966' }} placeholder="Released" />
- <div style={{ color:'#4a90d9', fontSize:'10px', fontWeight:'bold', marginTop:'3px' }}>Delivered / Released</div>
- </td>
- <td style={{ padding:'8px', textAlign:'right' }}>
- <input type="number" min="0" step="1" value={crateEntry.returned} onChange={e=>updateSettlementCrates(inv.id, 'returned', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #2d8a4e66' }} placeholder="Returned" />
- <div style={{ color:'#2d8a4e', fontSize:'10px', fontWeight:'bold', marginTop:'3px' }}>Returned / Collected</div>
- </td>
- <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.variance>0?'#ca1b1b':crateSummary.variance<0?'#4a90d9':'#2d8a4e' }}>{crateSummary.variance}</td>
- <td style={{ padding:'8px', textAlign:'right', color:'#777' }}>Projected Balance</td>
- <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.projectedBalance>0?'#ca1b1b':'#2d8a4e' }}>{Math.max(0, crateSummary.projectedBalance)}</td>
- </tr>
- <tr style={{ background:'#fffef5', borderBottom:'1px solid #e8eef8' }}>
- <td style={{ padding:'8px', fontWeight:'900', color:'#333' }}>Crate Covers</td>
- <td style={{ padding:'8px', textAlign:'right', color:'#777', fontWeight:'bold' }}>Covers</td>
- <td style={{ padding:'8px', textAlign:'right' }}>
- <input type="number" min="0" step="1" value={crateEntry.coverDelivered || ''} onChange={e=>updateSettlementCrates(inv.id, 'coverDelivered', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #4a90d966' }} placeholder="Released" />
- <div style={{ color:'#4a90d9', fontSize:'10px', fontWeight:'bold', marginTop:'3px' }}>Delivered / Released</div>
- </td>
- <td style={{ padding:'8px', textAlign:'right' }}>
- <input type="number" min="0" step="1" value={crateEntry.coverReturned || ''} onChange={e=>updateSettlementCrates(inv.id, 'coverReturned', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #2d8a4e66' }} placeholder="Returned" />
- <div style={{ color:'#2d8a4e', fontSize:'10px', fontWeight:'bold', marginTop:'3px' }}>Returned / Collected</div>
- </td>
- <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.coverVariance>0?'#ca1b1b':crateSummary.coverVariance<0?'#4a90d9':'#2d8a4e' }}>{crateSummary.coverVariance}</td>
- <td style={{ padding:'8px', textAlign:'right', color:'#777' }}>Projected Cover Balance</td>
- <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.projectedCoverBalance>0?'#ca1b1b':'#2d8a4e' }}>{Math.max(0, crateSummary.projectedCoverBalance)}</td>
- </tr>
- </tbody>
- </table>
- </div>
- <div style={{ background:'#f8fbff', border:'1px solid #e8eef8', borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1.5fr', gap:'8px' }}>
- <div><label style={lblS}>Dispatcher / Released By:</label><input value={crateEntry.dispatcher || ''} onChange={e=>updateSettlementCrates(inv.id, 'dispatcher', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
- <div><label style={lblS}>Driver / Collected By:</label><input value={crateEntry.driver || ''} onChange={e=>updateSettlementCrates(inv.id, 'driver', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
- <div><label style={lblS}>Crate / Cover Notes:</label><input value={crateEntry.notes || ''} onChange={e=>updateSettlementCrates(inv.id, 'notes', e.target.value)} placeholder="e.g. 2 crates and 1 cover left at reseller, 1 old crate returned" style={{...inputStyle, marginBottom:0 }} /></div>
- </div>
- <label style={{ display:'flex', alignItems:'center', gap:'8px', color:'#333', fontSize:'12px', fontWeight:'bold', marginTop:'10px' }}>
- <input type="checkbox" checked={crateEntry.confirmed === true} disabled={crateEntry.ledgerAvailable === false || !inv.reseller_id || String(inv.container_type || 'Crates').toLowerCase() !== 'crates'} onChange={e=>updateSettlementCrates(inv.id, 'confirmed', e.target.checked)} />
- I confirm these crate and cover quantities were physically dispatched or collected.
- </label>
- <p style={{ color:'#666', fontSize:'11px', margin:'8px 0 0' }}>Only confirmed handovers update Crates Inventory. Enter zero and confirm to clear an incorrect invoice handover.</p>
- </div>
+ <p style={{fontSize:12,margin:'6px 0'}}>Save settlement updates the outlet and production stock automatically. A later trip needs a new reference.</p>
+ </td></tr>}
+ </tbody></table></div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'8px', marginBottom:'12px' }}>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Actual Delivered</p><p style={{ color:'#1a1a2e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.adjustedGross)}</p></div>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Returns / Unsold</p><p style={{ color:'#ca1b1b', fontWeight:'900', margin:'3px 0 0' }}>- {php(summary.returnsCredit)}</p></div>
