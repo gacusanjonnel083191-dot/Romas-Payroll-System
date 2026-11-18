@@ -37,6 +37,8 @@ import CrateRollingControl from './CrateRollingControl.jsx'
 import RollingCartLoans from './RollingCartLoans.jsx'
 import SagsInternalTransfers from './SagsInternalTransfers.jsx'
 import { isSagsTransferSchemaMissing, sagsTransfersAsForecastDeliveries } from './sagsTransferForecast.js'
+import InvoicePaymentSources from './InvoicePaymentSources.jsx'
+import SourceBreakdown from './SourceBreakdown.jsx'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
 import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
@@ -7899,6 +7901,7 @@ export default function App() {
  const [paymentMethod, setPaymentMethod] = useState({})
  const [splitCashAmount, setSplitCashAmount] = useState({})
  const [splitGcashAmount, setSplitGcashAmount] = useState({})
+ const [receivableSource, setReceivableSource] = useState(null)
  const [viewingInvoice, setViewingInvoice] = useState(null)
  const [editingInvoice, setEditingInvoice] = useState(null)
  const [editInvoiceItems, setEditInvoiceItems] = useState([])
@@ -16864,6 +16867,23 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  return attachUnsoldQuantitiesToInvoice(invoice)
  }
  }
+
+ async function openSourceInvoice(invoiceId) {
+ try {
+ const { data, error } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').eq('id', invoiceId).single()
+ if (error || !data) throw error || new Error('Invoice unavailable')
+ await viewDeliveryInvoice(data)
+ } catch (error) { showToast('Unable to open source invoice: ' + (error?.message || error), 'red') }
+ }
+ const invoiceSourceRows = (invoices, amountField = 'balance') => invoices.map(invoice => ({
+ id:invoice.id, recordId:invoice.id, invoiceId:invoice.id, invoiceNumber:invoice.invoice_number,
+ source:amountField === 'paid_amount' ? 'Invoice cumulative paid amount' : 'Delivery invoice',
+ description:invoice.customer_name || invoice.reseller_name,
+ amount:amountField === 'balance' ? getInvoiceBalance(invoice) : moneyRound(invoice[amountField] || 0),
+ businessDate:amountField === 'paid_amount' ? invoice.paid_date : invoice.delivery_date,
+ enteredAt:invoice.created_at, recordedBy:invoice.created_by,
+ detail:`Delivery: ${invoice.delivery_date || '—'} · Due: ${invoice.due_date || '—'} · Invoice: ${php(invoice.total_amount)} · Paid: ${php(invoice.paid_amount || 0)} · Balance: ${php(getInvoiceBalance(invoice))}`
+ }))
 
  async function viewDeliveryInvoice(invoice) {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
@@ -45199,7 +45219,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {/* FINANCIAL DASHBOARD */}
  {salesView==='dashboard' && (
  <div>
- {activeTab==='sales' && adminRole==='owner' && <OwnerDailyReceipts supabase={supabase} today={today} adminRole={adminRole} onOpenExpenses={()=>setSalesView('expenses')} />}
+ {activeTab==='sales' && adminRole==='owner' && <OwnerDailyReceipts supabase={supabase} today={today} adminRole={adminRole} onOpenExpenses={()=>setSalesView('expenses')} onOpenInvoice={openSourceInvoice} />}
  {/* SUSPICIOUS ALERTS PANEL */}
  {suspiciousAlerts.filter(a=>!a.is_read).length > 0 && (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>
@@ -47509,6 +47529,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Math.max(0, safeNum(viewingInvoice.total_amount,0)-safeNum(viewingInvoice.paid_amount,0)))}</span>
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Reported Unsold: {getInvoiceViewItemRows(viewingInvoice).reduce((s,i)=>s+i.unsoldQty,0).toLocaleString('en-PH')} pcs</span>
  </div>
+ <InvoicePaymentSources key={viewingInvoice.id} client={supabase} invoice={viewingInvoice} />
  {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}> {viewingInvoice.notes}</p>}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> PRINT</button>
@@ -47532,7 +47553,14 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const overdueAR = overdue.reduce((s,i)=>s+getInvoiceBalance(i),0)
  const collectedToday = deliveryInvoices.filter(i=>i.paid_date===today).reduce((s,i)=>s+moneyRound(i.paid_amount||0),0)
  const collectedMonth = deliveryInvoices.filter(i=>i.paid_date?.startsWith(today.slice(0,7))).reduce((s,i)=>s+moneyRound(i.paid_amount||0),0)
- return (
+ const sources = {
+ 'Total Outstanding':invoiceSourceRows(outstanding),
+ 'Overdue':invoiceSourceRows(overdue),
+ 'Collected Today':invoiceSourceRows(deliveryInvoices.filter(i=>i.paid_date===today), 'paid_amount'),
+ 'Collected This Month':invoiceSourceRows(deliveryInvoices.filter(i=>i.paid_date?.startsWith(today.slice(0,7))), 'paid_amount')
+ }
+ const sourceTotal = {'Total Outstanding':totalAR, 'Overdue':overdueAR, 'Collected Today':collectedToday, 'Collected This Month':collectedMonth}
+ return (<>
  <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
  {[
  ['Total Outstanding', php(totalAR), '#ca1b1b', `${outstanding.length} invoices`],
@@ -47540,14 +47568,18 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  ['Collected Today', php(collectedToday), '#2d8a4e', today],
  ['Collected This Month', php(collectedMonth), '#4a90d9', today.slice(0,7)],
  ].map(([l,v,c,sub])=>(
- <div key={l} style={{ background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
+ <button type="button" key={l} disabled={invoicesLoading || Boolean(invoiceLoadError)} aria-expanded={receivableSource===l} onClick={()=>setReceivableSource(receivableSource===l ? null : l)} style={{ cursor:'pointer', textAlign:'left', fontFamily:'inherit', background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
  <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.4px' }}>{l}</p>
  <p style={{ fontWeight:'800', color:c, fontSize:'20px', margin:'0 0 2px' }}>{v}</p>
  <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{sub}</p>
- </div>
+ <span style={{fontSize:10, color:'#555'}}>View source details →</span>
+ </button>
  ))}
  </div>
- )
+ {receivableSource && !invoicesLoading && !invoiceLoadError && <SourceBreakdown title={receivableSource} rows={sources[receivableSource]} total={sourceTotal[receivableSource]}
+ explanation={receivableSource.startsWith('Collected') ? 'Existing card calculation: sum of cumulative paid amounts on invoices whose latest paid date falls in this period. This is not a payment-transaction ledger: installments paid in earlier periods may be included. Owner daily receipts uses dated payment records.' : 'Sum of remaining invoice balances across all loaded invoices, independent of the list filters below. Overdue includes invoices whose due date is before today.'}
+ onOpenInvoice={openSourceInvoice} onClose={()=>setReceivableSource(null)} />}
+ </>)
  })()}
  {/* Delivery Filter Tabs */}
  <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
@@ -47757,6 +47789,14 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <h4 style={{ color:'#2d8a4e', margin:'0 0 14px', fontSize:'13px' }}> End-of-Day Sales Entry</h4>
  <label style={lblS}>Sales Date:</label>
  <input type="date" value={salesDate} onChange={e=>setSalesDate(e.target.value)} style={{...inputStyle, maxWidth:'200px' }} />
+ <details style={{background:'white', padding:12, borderRadius:10, marginBottom:12}}>
+ <summary style={{cursor:'pointer', fontWeight:700}}>View source invoices for {salesDate}</summary>
+ {invoicesLoading ? <p>Loading invoices…</p> : invoiceLoadError ? <p role="alert">{invoiceLoadError}</p> : <SourceBreakdown title={'Reseller deliveries · ' + salesDate}
+ rows={invoiceSourceRows(deliveryInvoices.filter(i=>i.delivery_date===salesDate), 'total_amount')}
+ total={deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((sum,i)=>sum+Number(i.total_amount||0),0)}
+ explanation="These invoices supply the reseller deliveries amount in this entry. They are included by delivery date, regardless of payment date. Invoice sales are not proof of cash received. Walk-in and Messenger amounts come from the rows you enter below."
+ onOpenInvoice={openSourceInvoice} />}
+ </details>
  <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Sales Entries:</p>
  <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
  {['Variant','Channel','Qty',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
@@ -47814,8 +47854,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <p style={cps}>Walk-in: <strong>{php(walkin)}</strong></p>
  <p style={cps}>Messenger: <strong>{php(messenger)}</strong></p>
  <p style={cps}>Other sales included: <strong>{php(otherTotal)}</strong></p>
- <p style={cps}>Reseller deliveries: <strong>{php(resellerTotal)}</strong></p>
- <p style={{...cps, fontWeight:'bold', color:'#ca1b1b' }}>Total: <strong>{php(walkin+messenger+resellerTotal)}</strong></p>
+ <p style={cps}>Reseller deliveries: <strong>{invoicesLoading || invoiceLoadError ? 'Unavailable — check source invoices' : php(resellerTotal)}</strong></p>
+ <p style={{...cps, fontWeight:'bold', color:'#ca1b1b' }}>Total: <strong>{invoicesLoading || invoiceLoadError ? 'Pending invoices' : php(walkin+messenger+resellerTotal)}</strong></p>
  </div>
  </div>
  )
@@ -47827,6 +47867,12 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {[['cash','Cash received'],['gcash','GCash received'],['otherOnline','Other online received'],['unpaid','Not yet paid']].map(([key,label])=><label key={key} style={{ fontSize:11, fontWeight:700 }}>{label}<input type="number" min="0" step="0.01" value={salesReceiptSplit[key]} onChange={e=>setSalesReceiptSplit(prev=>({...prev,[key]:e.target.value}))} style={{...inputStyle, marginBottom:0}} placeholder="0.00" /></label>)}
  </div>
  </div>
+ <details style={{background:'white', padding:12, borderRadius:10, marginBottom:12}}>
+ <summary style={{cursor:'pointer', fontWeight:700}}>How Walk-in and Messenger are calculated</summary>
+ <p style={{fontSize:12}}>Each donut row = quantity × current product selling price. Other sales are added to their assigned channel. Reseller invoices are shown separately above.</p>
+ {salesEntries.filter(e=>e.variant_id).map((e,index)=>{const v=donutVariants.find(dv=>dv.id===e.variant_id); return <p key={index} style={{fontSize:12}}>{v?.name || e.variant_name} · {e.channel} · {Number(e.quantity||0)} × {php(v?.selling_price||0)} = <strong>{php(Number(e.quantity||0)*(v?.selling_price||0))}</strong></p>})}
+ {otherSalesEntries.filter(e=>e.category).map((e,index)=><p key={'other-'+index} style={{fontSize:12}}>{e.description || getOtherSalesCategory(e.category).label} · {getOtherSalesCategory(e.category).bucket} · <strong>{php(e.amount||0)}</strong></p>)}
+ </details>
  <label style={lblS}>Notes:</label>
  <input type="text" value={salesNotes} onChange={e=>setSalesNotes(e.target.value)} placeholder="e.g. Rainy day, slow sales" style={inputStyle} />
  <button style={{...btnGreen, opacity:savingSales?0.6:1 }} disabled={savingSales} onClick={saveDailySales}>{savingSales?' Saving...':' SAVE DAILY SALES'}</button>

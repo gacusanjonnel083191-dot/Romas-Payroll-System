@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { buildOwnerDailyReceipts } from './ownerDailyReceipts'
+import { buildOwnerDailyReceipts, ownerReceiptBreakdown } from './ownerDailyReceipts'
 import OwnerCashExpenses from './OwnerCashExpenses'
+import SourceBreakdown from './SourceBreakdown.jsx'
 import CashHandover from './CashHandover.jsx'
 
 const peso = amount => '₱' + Number(amount || 0).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })
@@ -11,7 +12,8 @@ const amountTh = { ...th, textAlign:'right' }
 const amountTd = { ...td, textAlign:'right', fontWeight:700, whiteSpace:'nowrap' }
 const timestamp = value => value ? new Date(value).toLocaleString('en-PH', { timeZone:'Asia/Manila', dateStyle:'medium', timeStyle:'short' }) : '—'
 
-export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenExpenses }) {
+export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenExpenses, onOpenInvoice }) {
+  const [selectedSource, setSelectedSource] = useState(null)
   const [date, setDate] = useState(today)
   const [raw, setRaw] = useState(null)
   const [loadedDate, setLoadedDate] = useState('')
@@ -55,14 +57,14 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
   const report = raw && loadedDate === date ? buildOwnerDailyReceipts(raw, date, raw.cash_expenses || []) : null
   const totals = report?.totals || {}
   const cards = [
-    ['Cash payments recorded', totals.cash, '#176b3a'],
-    ['GCash payments recorded', totals.gcash, '#1459a5'],
-    ['Other online payments recorded', totals.otherOnline, '#5d4aaf'],
-    ['Total payments recorded', totals.totalReceived, '#1a1a2e'],
-    ['From resellers', totals.resellerReceived, '#aa5618'],
-    ['Actual company cash counted', report?.actualCashCount, '#1a1a2e'],
-    ['Sales entered today', totals.salesEntered, '#ca1b1b'],
-    ['Delivered, still unpaid', report?.deliveredUnpaid, '#a45b00']
+    ['Cash payments recorded', 'cash', totals.cash, '#176b3a'],
+    ['GCash payments recorded', 'gcash', totals.gcash, '#1459a5'],
+    ['Other online payments recorded', 'otherOnline', totals.otherOnline, '#5d4aaf'],
+    ['Total payments recorded', 'totalReceived', totals.totalReceived, '#1a1a2e'],
+    ['From resellers', 'resellerReceived', totals.resellerReceived, '#aa5618'],
+    ['Actual company cash counted', 'actualCashCount', report?.actualCashCount, '#1a1a2e'],
+    ['Sales entered today', 'salesEntered', totals.salesEntered, '#ca1b1b'],
+    ['Delivered, still unpaid', 'deliveredUnpaid', report?.deliveredUnpaid, '#a45b00']
   ]
 
   return <section style={{ background:'#f8f9fb', border:'2px solid #f5c518', borderRadius:16, padding:16, marginBottom:18 }}>
@@ -80,11 +82,16 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
     {loading && !report && <p role="status">Loading daily receipts…</p>}
     {report && <>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:9, marginBottom:12 }}>
-        {cards.map(([label,value,color])=><div key={label} style={card}>
+        {cards.map(([label,key,value,color])=><button type="button" key={label} aria-expanded={selectedSource === key} disabled={loading || (key === 'actualCashCount' && Boolean(handoverError))} onClick={()=>setSelectedSource(selectedSource === key ? null : key)} style={{...card, textAlign:'left', cursor:'pointer', fontFamily:'inherit'}}>
           <div style={{ fontSize:11, color:'#666', marginBottom:5 }}>{label}</div>
           <strong style={{ color, fontSize:18 }}>{label === 'Actual company cash counted' && handoverError ? 'Unavailable' : value === null || value === undefined ? 'Not counted' : peso(value)}</strong>
-        </div>)}
+          <div style={{fontSize:11, marginTop:5, color:'#555'}}>View source details →</div>
+        </button>)}
       </div>
+      {selectedSource && <SourceBreakdown title={cards.find(row=>row[1] === selectedSource)?.[0] + ' · ' + date}
+        rows={ownerReceiptBreakdown(report, selectedSource)} total={cards.find(row=>row[1] === selectedSource)?.[2]}
+        explanation={selectedSource === 'salesEntered' ? 'Sales created on this Manila date, including backdated entries. Payment-only activity is excluded.' : selectedSource === 'deliveredUnpaid' ? 'Delivered invoices for this date: invoice amount minus payments, with balances below zero treated as zero.' : selectedSource === 'actualCashCount' ? 'Latest owner physical count for this date; legacy reconciliation is used only if no handover exists. No count is different from a counted zero.' : 'These are the exact source rows used above. Payment dates determine inclusion; unconfirmed methods are excluded from total confirmed payments.'}
+        onOpenInvoice={onOpenInvoice} onClose={()=>setSelectedSource(null)} />}
       <p style={{ background:'#eaf3ff', border:'1px solid #c9def6', borderRadius:8, padding:'10px 12px', margin:'0 0 12px', color:'#263b59', fontSize:12 }}>
         <strong>Why these totals can differ:</strong> Payments recorded today can settle sales from earlier dates. Sales entered today includes newly encoded invoices even if they are still unpaid, plus backdated sales encoded today. They are separate totals and are not expected to match.
       </p>

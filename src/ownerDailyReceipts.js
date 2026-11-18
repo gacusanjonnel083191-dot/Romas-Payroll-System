@@ -4,6 +4,11 @@ const cents = value => {
   return Number.isFinite(n) ? Math.round(n * 100) : 0
 }
 const money = value => value / 100
+const sourceMetadata = (row, source) => ({
+  recordId:row.id, invoiceId:source === 'Reseller invoice' ? row.id : row.invoice_id,
+  invoiceNumber:row.invoice_number || '',
+  recordedBy:row.recorded_by || row.encoded_by || row.created_by || row.submitted_by || row.closed_by || ''
+})
 const sum = (rows, field) => (rows || []).reduce((total, row) => total + cents(row[field]), 0)
 
 export function manilaDate(value) {
@@ -40,14 +45,14 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
     if (value <= 0) return
     const bucket = paymentBucket(method)
     totals[bucket] += value
-    receipts.push({ id:`${source}-${row.id}-${bucket}`, source, description, method:method || 'Unknown',
+    receipts.push({ ...sourceMetadata(row, source), id:`${source}-${row.id}-${bucket}`, source, description, method:method || 'Unknown',
       amount:money(value), businessDate, enteredAt:row.created_at || '', bucket })
   }
   const addEntered = (source, row, amount, description, businessDate) => {
     if (manilaDate(row.created_at) !== date) return
     const value = cents(amount)
     totals.salesEntered += value
-    entered.push({ id:`${source}-${row.id}`, source, description,
+    entered.push({ ...sourceMetadata(row, source), countsAsSale:true, id:`${source}-${row.id}`, source, description,
       amount:money(value), businessDate, enteredAt:row.created_at || '' })
   }
   const closingKeys = new Set(pos.filter(row => row.business_date === date)
@@ -118,10 +123,15 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
     addEntered('Reseller invoice', row, row.total_amount, row.reseller_name || row.invoice_number || 'Invoice',
       row.delivery_date)
   }
-  const deliveredUnpaid = invoices.filter(row => row.delivery_date === date &&
+  const deliveredUnpaidInvoices = invoices.filter(row => row.delivery_date === date &&
     !['void','voided','cancelled','deleted'].includes(String(row.status || '').toLowerCase()) &&
     (row.delivered_at || ['delivered','partial'].includes(String(row.status || '').toLowerCase())))
-    .reduce((total, row) => total + Math.max(0, cents(row.total_amount) - cents(row.paid_amount)), 0)
+    .map(row => ({ ...sourceMetadata(row, 'Reseller invoice'), id:row.id, source:'Delivered invoice',
+      description:row.reseller_name, businessDate:row.delivery_date, enteredAt:row.created_at,
+      amount:money(Math.max(0, cents(row.total_amount) - cents(row.paid_amount))),
+      detail:`Invoice ${money(cents(row.total_amount))} − paid ${money(cents(row.paid_amount))}` }))
+    .filter(row => row.amount > 0)
+  const deliveredUnpaid = sum(deliveredUnpaidInvoices, 'amount')
   const counts = (data.cash_counts || []).filter(row => row.reconciliation_date === date)
     .sort((a,b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
   const handover = (data.cash_handovers || []).filter(row => row.business_date === date)
@@ -141,12 +151,30 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   totals.totalReceived = totals.cash + totals.gcash + totals.otherOnline
   return {
     totals:Object.fromEntries(Object.entries(totals).map(([key,value]) => [key,money(value)])),
-    receipts, entered, deliveredUnpaid:money(deliveredUnpaid),
+    receipts, entered, deliveredUnpaidInvoices, deliveredUnpaid:money(deliveredUnpaid),
     bankDeposits:money(cashDeposited), approvedExpenses:money(sum(expenses,'amount')),
     cashExpenseRows, cashExpensesPaid:money(cashExpensesPaid),
     expensesNeedingReview, netRecordedCash:money(totals.cash - cashExpensesPaid - cashDeposited),
     cashExpectedComplete:expensesNeedingReview.length === 0,
     actualCashCount:handover ? (handover.owner_physical_count == null ? null : Number(handover.owner_physical_count)) : counts.length ? Number(counts[0].actual_cash) : null,
+    cashCountSource:handover || counts[0] || null,
     cashCountAt:handover ? handover.owner_count_at || '' : counts[0]?.created_at || ''
   }
+}
+
+export function ownerReceiptBreakdown(report, key) {
+  if (key === 'salesEntered') return report.entered.filter(row=>row.countsAsSale)
+  if (key === 'deliveredUnpaid') return report.deliveredUnpaidInvoices
+  if (key === 'resellerReceived') return report.receipts.filter(row=>row.source === 'Reseller payment')
+  if (key === 'totalReceived') return report.receipts.filter(row=>row.bucket !== 'unknown')
+  if (key === 'actualCashCount') {
+    const row = report.cashCountSource
+    return report.actualCashCount == null ? [] : [{ id:row.id, recordId:row.id,
+      source:row.business_date ? 'Owner cash handover count' : 'Legacy cash reconciliation',
+      description:'Physical company cash count', amount:report.actualCashCount,
+      businessDate:row.business_date || row.reconciliation_date, enteredAt:report.cashCountAt,
+      recordedBy:row.received_by || row.submitted_by || '',
+      detail:row.revision ? `Handover revision ${row.revision}` : '' }]
+  }
+  return report.receipts.filter(row=>row.bucket === key)
 }
