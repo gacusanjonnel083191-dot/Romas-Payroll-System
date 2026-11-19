@@ -34,6 +34,7 @@ import ResellerCalculator from './ResellerCalculator.jsx'
 import { getResellerPaymentParts, getResellerPaymentTotal } from './resellerPaymentSplit.js'
 import OutletPerformance from './OutletPerformance.jsx'
 import CrateInventory from './CrateInventory.jsx'
+import { getMotherAccountCratePool, summarizeCratesRecordedToday, isRepeatedAccountCrateTrip } from './motherAccountCrates.js'
 import { crateRequest } from './crateInventory.js'
 import RollingCartLoans from './RollingCartLoans.jsx'
 import SagsInternalTransfers from './SagsInternalTransfers.jsx'
@@ -7992,6 +7993,7 @@ export default function App() {
  const [paymentNotes, setPaymentNotes] = useState({})
  const [settlementRows, setSettlementRows] = useState({})
  const [settlementCrates, setSettlementCrates] = useState({})
+ const [motherAccountDailyCrates, setMotherAccountDailyCrates] = useState({})
  const [settlementSaving, setSettlementSaving] = useState({})
  const settlementSavingRef = useRef(new Set())
  // Driver Return Form
@@ -17454,6 +17456,26 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  })
  }
 
+  // Shared daily collection history for every outlet linked to a mother account.
+ // Fetch only when the settlement card is opened, manually refreshed, or saved.
+ async function refreshMotherAccountCratesForInvoice(inv) {
+  const pool=getMotherAccountCratePool(inv.reseller_id,resellers,resellerAccounts)
+  if(!pool?.accountId)return {crates:0,covers:0,entries:[]}
+  const key=pool.key+':'+today
+  setMotherAccountDailyCrates(p=>({...p,[key]:{...p[key],status:'loading',error:''}}))
+  const {data,error}=await supabase.from('crate_inventory_events')
+   .select('id,action,location_key,business_date,crates,covers,driver,reference,created_at,recorded_name')
+   .eq('action','collection').eq('business_date',today)
+   .in('location_key',pool.outletIds).order('created_at',{ascending:false})
+  if(error){
+   setMotherAccountDailyCrates(p=>({...p,[key]:{status:'error',error:error.message}}))
+   throw error
+  }
+  const summary=summarizeCratesRecordedToday(data||[],pool,today)
+  setMotherAccountDailyCrates(p=>({...p,[key]:{status:'ready',summary,error:''}}))
+  return summary
+ }
+
  async function openInvoiceSettlement(inv) {
  if (showPaymentFormMap[inv.id]) { setShowPaymentFormMap(p=>({...p,[inv.id]:false})); return }
  const crateLedgerAvailable = true
@@ -17477,6 +17499,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setPaymentMethod(p=>({...p,[inv.id]:p[inv.id] || 'Cash'}))
  setPaymentNotes(p=>({...p,[inv.id]:p[inv.id] || ''}))
  setShowPaymentFormMap(p=>({...p,[inv.id]:true}))
+ void refreshMotherAccountCratesForInvoice(inv).catch(()=>{})
  }
 
  function updateSettlementRow(invoiceId, idx, field, value) {
@@ -17590,7 +17613,15 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  let invoiceSaved = false
  let crateSyncResult = { ok:true, saved:false }
  try {
- if (crateSummary.hasEntry) crateSyncResult = await syncInvoiceSettlementCrates(inv)
+ if (crateSummary.hasEntry) {
+  const pool=getMotherAccountCratePool(inv.reseller_id,resellers,resellerAccounts)
+  if(pool?.accountId){
+   const groupHistory=await refreshMotherAccountCratesForInvoice(inv)
+   if(isRepeatedAccountCrateTrip(groupHistory.entries,crateEntry.driver,crateEntry.reference))
+    throw new Error('This driver trip/list was already recorded today for the mother account. Leave crates blank if repeated, or use a different reference for a genuinely new pickup.')
+  }
+  crateSyncResult=await syncInvoiceSettlementCrates(inv)
+ }
  const { data:oldReturns } = await supabase.from('reseller_returns').select('id').eq('invoice_id', inv.id)
  const oldIds = (oldReturns || []).map(r => r.id).filter(Boolean)
  if (oldIds.length) { await supabase.from('reseller_return_items').delete().in('return_id', oldIds); await supabase.from('reseller_returns').delete().in('id', oldIds) }
@@ -17636,6 +17667,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  // Keep the selected invoice tab while refreshing the saved settlement.
  await loadDeliveryInvoices()
  await loadOnlinePayments()
+ void refreshMotherAccountCratesForInvoice(inv).catch(()=>{})
  refreshFoundationAfterDataChange('invoice-settlement-saved')
  } catch(err) {
  if (!invoiceSaved && paymentIds.length) await supabase.from('reseller_payments').delete().in('id', paymentIds)
@@ -43820,7 +43852,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
 
  {/* CRATES CONTROL — one active inventory table */}
- {activeTab==='crates' && <CrateInventory client={supabase} resellers={resellers} today={today} adminRole={adminRole} onSettle={outlet=>{setActiveTab('sales');setSalesView('receivables');setReceivableOutlet({id:outlet.id,name:outlet.name});setInvoiceFilter('all');setInvoiceSearchTerm('')}} />}
+ {activeTab==='crates' && <CrateInventory client={supabase} resellers={resellers} accounts={resellerAccounts} today={today} adminRole={adminRole} onSettle={outlet=>{setActiveTab('sales');setSalesView('receivables');setReceivableOutlet({id:outlet.id,name:outlet.name});setInvoiceFilter('all');setInvoiceSearchTerm('')}} />}
 
  {/* COSTING OWNER ONLY */}
  {activeTab==='costing' && (
@@ -47257,6 +47289,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const summary = getSettlementSummary(inv, rows)
  const crateEntry = settlementCrates[inv.id] || { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }
  const crateSummary = getSettlementCrateSummary(inv)
+ const motherPool=getMotherAccountCratePool(inv.reseller_id,resellers,resellerAccounts)
+ const motherDaily=motherPool?.accountId?motherAccountDailyCrates[motherPool.key+':'+today]:null
  const cashTooHigh = summary.cashReceived > summary.dueBeforeCash
  const isSplitPayment = paymentMethod[inv.id] === 'Cash + GCash'
  return (
@@ -47294,13 +47328,28 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {inv.reseller_id && <tr style={{background:'#fff8dc',borderTop:'2px solid #FDD412'}}>
  <td colSpan={7} style={{padding:12}}>
  <strong>Crates returned to production — this pickup only</strong>
- <p style={{fontSize:12,margin:'6px 0'}}>Use the driver’s per-outlet list. Enter the pickup once, even if paying several invoices. Leave quantities at zero when nothing was collected.</p>
+ <p style={{fontSize:12,margin:'6px 0'}}>{motherPool?.accountId ? 'All outlets linked to this mother account mix crates. Record each driver trip only once, under whichever outlet is handled first. Do not split or repeat the same pickup.' : 'Use the driver’s per-outlet list. Enter the pickup once, even if paying several invoices. Leave quantities at zero when nothing was collected.'}</p>
+ {motherPool?.accountId && <div role="status" style={{background:'#edf7ff',border:'1px solid #a9d5f5',borderRadius:9,padding:11,margin:'8px 0'}}>
+ <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+ <strong style={{color:'#183d60'}}>Crates already recorded today — {motherPool.name}</strong>
+ <button type="button" disabled={motherDaily?.status==='loading'} onClick={()=>void refreshMotherAccountCratesForInvoice(inv).catch(()=>{})} style={{padding:'5px 9px',borderRadius:6,border:'1px solid #a9d5f5',background:'white',cursor:'pointer',fontSize:11}}>Refresh</button>
+ </div>
+ {motherDaily?.status==='ready' ? <>
+ <div style={{fontSize:18,fontWeight:900,color:'#183d60',marginTop:5}}>{motherDaily.summary.crates} crates / {motherDaily.summary.covers} covers</div>
+ {motherDaily.summary.entries.slice(0,4).map(entry=><div key={entry.id} style={{fontSize:11,color:'#47627a',marginTop:3}}>
+ {entry.outletName} · {entry.crates} crates / {entry.covers} covers · {entry.driver} · List {entry.reference} · {entry.created_at ? new Date(entry.created_at).toLocaleTimeString('en-PH',{timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit'}) : ''}
+ </div>)}
+ <p style={{fontSize:11,color:'#47627a',margin:'5px 0 0'}}>Shared daily total, not a new entry. Leave the fields below blank unless this is a separate pickup.</p>
+ </> : <p style={{fontSize:11,margin:'5px 0 0',color:motherDaily?.status==='error'?'#a11':'#47627a'}}>
+ {motherDaily?.status==='error'?'Could not verify today’s shared crates. Refresh before recording more crates.':'Checking today’s shared collection records…'}
+ </p>}
+ </div>}
  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10}}>
  {[['returned','Crates collected'],['coverReturned','Covers collected']].map(([field,label])=><label key={field}>{label}<input aria-label={label} type="number" min="0" step="1" value={crateEntry[field]||''} onChange={e=>updateSettlementCrates(inv.id,field,e.target.value)} style={{...inputStyle,marginBottom:0}} placeholder="0" /></label>)}
  <label>Driver<input aria-label="Collection driver" value={crateEntry.driver||''} onChange={e=>updateSettlementCrates(inv.id,'driver',e.target.value)} style={{...inputStyle,marginBottom:0}} /></label>
  <label>Trip / list reference<input aria-label="Collection trip reference" value={crateEntry.reference||'1'} onChange={e=>updateSettlementCrates(inv.id,'reference',e.target.value)} style={{...inputStyle,marginBottom:0}} /></label>
  </div>
- <p style={{fontSize:12,margin:'6px 0'}}>Save settlement updates the outlet and production stock automatically. A later trip needs a new reference.</p>
+ <p style={{fontSize:12,margin:'6px 0'}}>Save settlement updates the mother account’s shared crates (or the independent outlet’s crates) and production stock. A genuinely new trip needs a different reference.</p>
  </td></tr>}
  </tbody></table></div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'8px', marginBottom:'12px' }}>

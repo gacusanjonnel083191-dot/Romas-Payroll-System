@@ -14,7 +14,7 @@ test('new inventory cycle preserves history; transfers, recounts, permissions an
  create function public.business_control_has_role(roles text[]) returns boolean language sql as $$select coalesce(current_setting('test.role',true),'owner')=any(roles)$$;
  create table public.admin_users(auth_user_id uuid,full_name text);
  insert into public.admin_users values(auth.uid(),'Test owner');
- create table public.resellers(id uuid primary key);insert into public.resellers values('${outlet}');
+ create table public.resellers(id uuid primary key,reseller_account_id uuid);insert into public.resellers(id) values('${outlet}');
  create table public.delivery_invoices(id uuid primary key,reseller_id uuid,status text);insert into public.delivery_invoices values('${invoice}','${outlet}','paid');
  create table public.crate_movements(id integer);insert into public.crate_movements values(1),(2);
  create table public.crate_physical_counts(id integer);`)
@@ -56,6 +56,19 @@ test('new inventory cycle preserves history; transfers, recounts, permissions an
  await assert.rejects(db.query("update public.crate_inventory_locations set crates=999"),/permission denied/)
  await db.exec('reset role')
  assert.equal((await db.query('select count(*)::int as n from public.crate_movements')).rows[0].n,2)
+ // A pickup through another outlet in the same mother account uses shared stock.
+ await db.exec("select set_config('test.role','owner',false)")
+ const other='cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+ const account='dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+ await db.query('update public.resellers set reseller_account_id=$1 where id=$2',[account,outlet])
+ await db.query('insert into public.resellers(id,reseller_account_id) values($1,$2)',[other,account])
+ await save(request({action:'collection',resellerId:other,crates:2,driver:'Driver C',reference:'shared-trip-1'}))
+ const groupBalance=async()=>(await db.query('select sum(crates)::integer as crates from public.crate_inventory_locations where reseller_id in ($1,$2)',[outlet,other])).rows[0].crates
+ assert.equal(await groupBalance(),5,'collection is shared even when this outlet has zero local crates')
+ await assert.rejects(save(request({action:'collection',resellerId:outlet,crates:1,driver:'driver c',reference:'SHARED-TRIP-1'})),/already recorded today under this mother account/)
+ await assert.rejects(save(request({action:'collection',resellerId:other,crates:6,driver:'Driver C',reference:'shared-trip-2'})),/exceeds the shared mother-account/)
+ await save(request({action:'count',resellerId:outlet,crates:9,covers:2,notes:'Shared group physical recount'}))
+ assert.equal(await groupBalance(),9,'mother-account count replaces the group balance')
  }finally{await db.close()}
 })
 test('daily movements show both ends without double counting and ignore count requests',()=>{

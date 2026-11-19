@@ -14,9 +14,11 @@ export async function fetchCrateRows(client,table) {
 }
 export function dailyCrateMovements(events,key,day){
   const result={sent:[0,0],received:[0,0]}
+  const production=key==='production'
+  const keys=new Set((Array.isArray(key)?key:[key]).map(String))
   for(const e of events){
-    if(e.business_date!==day||!['dispatch','collection'].includes(e.action)||(key!=='production'&&e.location_key!==key))continue
-    const sent=key==='production'?e.action==='dispatch':e.action==='collection'
+    if(e.business_date!==day||!['dispatch','collection'].includes(e.action)||(!production&&!keys.has(String(e.location_key))))continue
+    const sent=production?e.action==='dispatch':e.action==='collection'
     const pair=result[sent?'sent':'received'];pair[0]+=e.crates;pair[1]+=e.covers
   }
   return result
