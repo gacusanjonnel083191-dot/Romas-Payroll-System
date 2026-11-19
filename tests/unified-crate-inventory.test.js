@@ -19,6 +19,7 @@ test('new inventory cycle preserves history; transfers, recounts, permissions an
  create table public.crate_movements(id integer);insert into public.crate_movements values(1),(2);
  create table public.crate_physical_counts(id integer);`)
  await db.exec(await readFile(new URL('../supabase/migrations/20261118090000_unified_crate_inventory.sql',import.meta.url),'utf8'))
+ await db.exec(await readFile(new URL('../supabase/migrations/20261119030000_mother_account_shared_crate_inventory.sql',import.meta.url),'utf8'))
  const day=(await db.query("select (now() at time zone 'Asia/Manila')::date::text as day")).rows[0].day
  const request=(values)=>crateRequest({day,requestId:randomUUID(),...values})
  const save=async args=>(await db.query('select public.crate_inventory_save($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) as result',Object.values(args))).rows[0].result
