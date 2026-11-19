@@ -7,7 +7,7 @@ import { buildOwnerDailyReceipts, manilaDate } from '../src/ownerDailyReceipts.j
 const date = '2026-10-05'
 const at = '2026-10-05T04:00:00Z'
 
-test('daily receipts count actual payment dates and methods without unpaid invoices or duplicate POS sales', () => {
+test('daily receipts count Philippine entry dates and methods without unpaid invoices or duplicate POS sales', () => {
   assert.equal(manilaDate('2026-10-04T17:00:00Z'), date)
   const report = buildOwnerDailyReceipts({
     daily_sales:[
@@ -41,14 +41,14 @@ test('daily receipts count actual payment dates and methods without unpaid invoi
     expenses:[{ id:'expense', expense_date:date, amount:15, status:'approved' }]
   }, date)
   assert.deepEqual(report.totals, {
-    cash:285, gcash:93, otherOnline:55, unknown:30, unpaid:10, trackingOnly:12, duplicateTracked:40, salesEntered:955, resellerReceived:125, totalReceived:433
+    cash:355, gcash:93, otherOnline:55, unknown:30, unpaid:10, trackingOnly:12, duplicateTracked:40, salesEntered:955, resellerReceived:195, totalReceived:503
   })
   assert.equal(report.deliveredUnpaid,500)
   assert.equal(report.actualCashCount,240)
   assert.equal(report.bankDeposits,50)
   assert.equal(report.approvedExpenses,15)
   assert.ok(report.entered.some(row => row.id === 'reseller-payment-later'))
-  assert.ok(!report.receipts.some(row => row.id.startsWith('Reseller payment-later-')))
+  assert.ok(report.receipts.some(row => row.id.startsWith('Reseller payment-later-')))
 })
 
 test('daily cash movement deducts only owner-confirmed cash expense payments and deposits', () => {
@@ -92,7 +92,7 @@ test('owner receipt migration compiles and its RPC denies a non-owner', async ()
         reseller_name text, invoice_id uuid, amount numeric, payment_method text, recorded_by text);
       create table pos_shift_closings (id uuid, business_date date, created_at timestamptz,
         outlet_id text, total_sales numeric, cash_sales numeric, gcash_sales numeric, online_sales numeric,
-        actual_cash numeric, opening_cash numeric, shift_id text);
+        actual_cash numeric, opening_cash numeric, shift_id text, closed_by text, verified_by text);
       create table outlet_weekly_remittance_reports (id uuid, week_end date, created_at timestamptz,
         reseller_name text, total_sales_amount numeric, actual_remitted_amount numeric, payment_method text, status text);
       create table delivery_invoices (id uuid, invoice_number text, created_at timestamptz,
@@ -102,6 +102,8 @@ test('owner receipt migration compiles and its RPC denies a non-owner', async ()
       create table daily_expenses (id uuid primary key, expense_date date, created_at timestamptz, amount numeric, category text, description text, status text);`)
     const migration = new URL('../supabase/migrations/20261005103351_owner_daily_receipts.sql', import.meta.url)
     await db.exec(await readFile(migration, 'utf8'))
+    await db.exec('create schema private')
+    await db.exec(await readFile(new URL('../supabase/migrations/20261119020000_owner_receipts_entry_date.sql', import.meta.url), 'utf8'))
     await assert.rejects(db.query('select public.owner_daily_receipts($1)', [date]), /Owner access required/)
     await db.exec('set role anon')
     await assert.rejects(db.query('select public.owner_daily_receipts($1)', [date]), /permission denied/)

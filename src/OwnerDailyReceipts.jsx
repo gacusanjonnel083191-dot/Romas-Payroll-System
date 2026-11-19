@@ -40,7 +40,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
         supabase.from('cash_handover_events').select('*').eq('business_date', selectedDate).order('revision', { ascending:false })
       ])
       if (requestId !== requestRef.current) return
-      const requestError = receiptResult.error || expenseResult.error
+      const requestError = receiptResult.error || expenseResult.error || (receiptResult.data?.receipt_basis !== 'entry_date_v1' ? { message:'Entry-date reporting update is required before this report can be used.' } : null)
       if (requestError) { setRaw(null); setError('Daily receipts could not be loaded: ' + requestError.message) }
       else {
         setHandoverError(handoverResult.error ? 'Cash handover history could not be loaded. Saving is unavailable: ' + handoverResult.error.message : '')
@@ -71,7 +71,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:12 }}>
       <div>
         <h3 style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:18 }}>Owner daily receipts</h3>
-        <p style={{ margin:0, color:'#666', fontSize:12 }}>Recorded payments follow payment date. Sales entered follows Manila entry date.</p>
+        <p style={{ margin:0, color:'#666', fontSize:12 }}>Payments and sales entries follow the date first recorded in Philippine time. POS totals use admin-recorded daily summaries, not cashier shift closings.</p>
       </div>
       <div style={{ display:'flex', gap:8, alignItems:'center' }}>
         <input aria-label="Daily receipts date" type="date" value={date} max={today} onChange={event=>setDate(event.target.value)} style={{ padding:8, minHeight:40, border:'1px solid #ccc', borderRadius:7 }} />
@@ -90,7 +90,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
       </div>
       {selectedSource && <SourceBreakdown title={cards.find(row=>row[1] === selectedSource)?.[0] + ' · ' + date}
         rows={ownerReceiptBreakdown(report, selectedSource)} total={cards.find(row=>row[1] === selectedSource)?.[2]}
-        explanation={selectedSource === 'salesEntered' ? 'Sales created on this Manila date, including backdated entries. Payment-only activity is excluded.' : selectedSource === 'deliveredUnpaid' ? 'Delivered invoices for this date: invoice amount minus payments, with balances below zero treated as zero.' : selectedSource === 'actualCashCount' ? 'Latest owner physical count for this date; legacy reconciliation is used only if no handover exists. No count is different from a counted zero.' : 'These are the exact source rows used above. Payment dates determine inclusion; unconfirmed methods are excluded from total confirmed payments.'}
+        explanation={selectedSource === 'salesEntered' ? 'Sales created on this Manila date, including backdated entries. Payment-only activity is excluded.' : selectedSource === 'deliveredUnpaid' ? 'Delivered invoices for this date: invoice amount minus payments, with balances below zero treated as zero.' : selectedSource === 'actualCashCount' ? 'Latest owner physical count for this date; legacy reconciliation is used only if no handover exists. No count is different from a counted zero.' : 'These are the exact source rows used above. Philippine entry dates determine inclusion; unconfirmed methods are excluded from total confirmed payments.'}
         onOpenInvoice={onOpenInvoice} onClose={()=>setSelectedSource(null)} />}
       <p style={{ background:'#eaf3ff', border:'1px solid #c9def6', borderRadius:8, padding:'10px 12px', margin:'0 0 12px', color:'#263b59', fontSize:12 }}>
         <strong>Why these totals can differ:</strong> Payments recorded today can settle sales from earlier dates. Sales entered today includes newly encoded invoices even if they are still unpaid, plus backdated sales encoded today. They are separate totals and are not expected to match.
@@ -128,11 +128,11 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
       </div>
       <OwnerCashExpenses detailsRef={expenseDetailsRef} rows={report.cashExpenseRows} date={date} today={today} supabase={supabase} onSaved={()=>load(date)} onOpenExpenses={onOpenExpenses} />
       <details open style={{ ...card, marginBottom:10 }}>
-        <summary style={{ fontWeight:700, cursor:'pointer' }}>Payments received on {date} ({report.receipts.length})</summary>
+        <summary style={{ fontWeight:700, cursor:'pointer' }}>Payments recorded on {date} ({report.receipts.length})</summary>
         <div style={{ overflowX:'auto', marginTop:10 }}>
           <table style={{ width:'100%', borderCollapse:'collapse', minWidth:650 }}>
-            <thead style={{ background:'#1a1a2e' }}><tr>{['Source','Customer / outlet','Method','Amount','Entered'].map(label=><th key={label} style={label === 'Amount' ? amountTh : th}>{label}</th>)}</tr></thead>
-            <tbody>{report.receipts.map(row=><tr key={row.id}><td style={td}>{row.source}</td><td style={td}>{row.description}</td><td style={td}>{row.method}</td><td style={amountTd}>{peso(row.amount)}</td><td style={td}>{timestamp(row.enteredAt)}</td></tr>)}</tbody>
+            <thead style={{ background:'#1a1a2e' }}><tr>{['Source','Customer / outlet','Business date','Method','Amount','Recorded by','Entered'].map(label=><th key={label} style={label === 'Amount' ? amountTh : th}>{label}</th>)}</tr></thead>
+            <tbody>{report.receipts.map(row=><tr key={row.id}><td style={td}>{row.source}</td><td style={td}>{row.description}</td><td style={td}>{row.businessDate || '—'}</td><td style={td}>{row.method}</td><td style={amountTd}>{peso(row.amount)}</td><td style={td}>{row.recordedBy || '—'}</td><td style={td}>{timestamp(row.enteredAt)}</td></tr>)}</tbody>
           </table>
           {report.receipts.length === 0 && <p style={{ fontSize:12, color:'#777', padding:8 }}>No receipts recorded for this date.</p>}
         </div>

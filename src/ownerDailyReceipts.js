@@ -1,4 +1,3 @@
-import { posClosingReceipts } from './posClosingSummary.js'
 const cents = value => {
   const n = Number(value)
   return Number.isFinite(n) ? Math.round(n * 100) : 0
@@ -7,7 +6,7 @@ const money = value => value / 100
 const sourceMetadata = (row, source) => ({
   recordId:row.id, invoiceId:source === 'Reseller invoice' ? row.id : row.invoice_id,
   invoiceNumber:row.invoice_number || '',
-  recordedBy:row.recorded_by || row.encoded_by || row.created_by || row.submitted_by || row.closed_by || ''
+  recordedBy:row.recorded_by || row.verified_by || row.encoded_by || row.created_by || row.submitted_by || row.closed_by || ''
 })
 const sum = (rows, field) => (rows || []).reduce((total, row) => total + cents(row[field]), 0)
 
@@ -34,7 +33,9 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   const sales = data.daily_sales || []
   const online = data.daily_online || []
   const reseller = data.reseller_payments || []
-  const pos = posClosingReceipts(data.pos_closings || [])
+  // Only admin-recorded daily summaries belong in owner entry activity.
+  // Cashier shift closings remain in the POS sales reports.
+  const pos = (data.pos_closings || []).filter(row => !row.shift_id && manilaDate(row.created_at) === date)
   const remittances = data.outlet_remittances || []
   const invoices = data.invoices || []
   const receipts = []
@@ -55,40 +56,39 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
     entered.push({ ...sourceMetadata(row, source), countsAsSale:true, id:`${source}-${row.id}`, source, description,
       amount:money(value), businessDate, enteredAt:row.created_at || '' })
   }
-  const closingKeys = new Set(pos.filter(row => row.business_date === date)
+  const closingKeys = new Set(pos
     .map(row => `${row.outlet_id}|${row.business_date}`))
   for (const row of sales) {
     const amount = cents(row.total_walkin) + cents(row.total_messenger)
     const marker = String(row.notes || '').match(/SAGS-POS-SHIFT-CLOSING\|([^|\s;]+)\|(\d{4}-\d{2}-\d{2})/)
     const matchedPos = marker && closingKeys.has(`${marker[1]}|${marker[2]}`)
     addEntered('Daily Sales', row, money(amount), row.encoded_by || 'Daily Sales', row.sale_date)
-    if (row.sale_date !== date || amount <= 0 || matchedPos) continue
+    if (manilaDate(row.created_at) !== date || amount <= 0 || matchedPos) continue
     const fields = ['cash_received','gcash_received','other_online_received','unpaid_amount']
     const splitRecorded = fields.every(field => row[field] !== null && row[field] !== undefined)
     if (!splitRecorded) {
       totals.unknown += amount
       continue
     }
-    addReceipt('Daily Sales', row, row.cash_received, 'Cash', date, row.encoded_by || 'Daily Sales')
-    addReceipt('Daily Sales GCash', row, row.gcash_received, 'GCash', date, row.encoded_by || 'Daily Sales')
-    addReceipt('Daily Sales Online', row, row.other_online_received, 'Other Online', date, row.encoded_by || 'Daily Sales')
+    addReceipt('Daily Sales', row, row.cash_received, 'Cash', row.sale_date, row.encoded_by || 'Daily Sales')
+    addReceipt('Daily Sales GCash', row, row.gcash_received, 'GCash', row.sale_date, row.encoded_by || 'Daily Sales')
+    addReceipt('Daily Sales Online', row, row.other_online_received, 'Other Online', row.sale_date, row.encoded_by || 'Daily Sales')
     totals.unpaid += cents(row.unpaid_amount)
   }
   for (const row of pos) {
-    if (row.business_date !== date) continue
-    addReceipt('POS', row, row.cash_sales, 'Cash', date, row.outlet_id || 'POS shift')
-    addReceipt('POS GCash', row, row.gcash_sales, 'GCash', date, row.outlet_id || 'POS shift')
-    addReceipt('POS Online', row, row.online_sales, 'Other Online', date, row.outlet_id || 'POS shift')
-    const matchingSale = sales.some(sale => String(sale.notes || '').includes(`SAGS-POS-SHIFT-CLOSING|${row.outlet_id}|${date}`))
-    if (!matchingSale) addEntered('POS', row, row.total_sales, row.outlet_id || 'POS shift', date)
+    addReceipt('POS', row, row.cash_sales, 'Cash', row.business_date, row.outlet_id || 'POS shift')
+    addReceipt('POS GCash', row, row.gcash_sales, 'GCash', row.business_date, row.outlet_id || 'POS shift')
+    addReceipt('POS Online', row, row.online_sales, 'Other Online', row.business_date, row.outlet_id || 'POS shift')
+    const matchingSale = sales.some(sale => manilaDate(sale.created_at) === date && String(sale.notes || '').includes(`SAGS-POS-SHIFT-CLOSING|${row.outlet_id}|${row.business_date}`))
+    if (!matchingSale) addEntered('POS', row, row.total_sales, row.outlet_id || 'POS shift', row.business_date)
   }
   for (const row of online) {
     if (String(row.status || 'active').toLowerCase() === 'void') continue
     const amount = cents(row.amount)
     if (row.count_as_revenue === false) {
-      if (row.payment_date === date) {
+      if (manilaDate(row.created_at) === date) {
         if (row.receipt_already_counted === false) addReceipt('Earlier sale paid online', row, row.amount, row.payment_method,
-          date, row.customer_name || row.sales_channel || 'Daily Sales')
+          row.payment_date, row.customer_name || row.sales_channel || 'Daily Sales')
         else if (row.receipt_already_counted === true) totals.duplicateTracked += amount
         else totals.trackingOnly += amount
       }
@@ -99,17 +99,17 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
       continue
     }
     addEntered('Online Sale', row, row.amount, row.customer_name || row.sales_channel || 'Daily Sales', row.payment_date)
-    if (row.payment_date === date) addReceipt('Online Sale', row, row.amount, row.payment_method, date,
+    if (manilaDate(row.created_at) === date) addReceipt('Online Sale', row, row.amount, row.payment_method, row.payment_date,
       row.customer_name || row.sales_channel || 'Daily Sales')
   }
   for (const row of reseller) {
     if (manilaDate(row.created_at) === date) entered.push({ id:`reseller-payment-${row.id}`,
       source:'Reseller payment', description:row.reseller_name || 'Reseller',
       amount:money(cents(row.amount)), businessDate:row.payment_date, enteredAt:row.created_at || '' })
-    if (row.payment_date === date) {
+    if (manilaDate(row.created_at) === date) {
       totals.resellerReceived += cents(row.amount)
       addReceipt('Reseller payment', row, row.amount, row.payment_method,
-        date, [row.reseller_name || 'Reseller', row.invoice_number].filter(Boolean).join(' · '))
+        row.payment_date, [row.reseller_name || 'Reseller', row.invoice_number].filter(Boolean).join(' · '))
     }
   }
   for (const row of remittances) {

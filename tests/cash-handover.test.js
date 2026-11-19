@@ -7,7 +7,7 @@ import { buildOwnerDailyReceipts } from '../src/ownerDailyReceipts.js'
 import { cashVariances, validCashAmount, canReconcile } from '../src/cashHandover.js'
 
 const day='2026-09-20'
-const raw = { daily_sales:[{id:'s',sale_date:day,total_walkin:1000,total_messenger:0,cash_received:600,gcash_received:200,other_online_received:100,unpaid_amount:100}], daily_online:[],reseller_payments:[{id:'r',payment_date:day,amount:400,payment_method:'Cash'}],pos_closings:[],outlet_remittances:[],invoices:[{id:'i',delivery_date:day,total_amount:900,paid_amount:0,status:'delivered'}],cash_counts:[],bank_deposits:[{deposit_date:day,amount:200,status:'deposited'},{deposit_date:day,amount:500,status:'pending'}],expenses:[] }
+const raw = { daily_sales:[{id:'s',sale_date:day,created_at:day+'T02:00:00Z',total_walkin:1000,total_messenger:0,cash_received:600,gcash_received:200,other_online_received:100,unpaid_amount:100}], daily_online:[],reseller_payments:[{id:'r',payment_date:day,created_at:day+'T02:00:00Z',amount:400,payment_method:'Cash'}],pos_closings:[],outlet_remittances:[],invoices:[{id:'i',delivery_date:day,total_amount:900,paid_amount:0,status:'delivered'}],cash_counts:[],bank_deposits:[{deposit_date:day,amount:200,status:'deposited'},{deposit_date:day,amount:500,status:'pending'}],expenses:[] }
 const expenses=[{expense_date:day,status:'approved',payment_method:'cash',paid_date:day,classified_amount:100},{expense_date:day,status:'approved',payment_method:'gcash',paid_date:day,classified_amount:300}]
 const migration=fs.readFileSync(new URL('../supabase/migrations/20261005170522_cash_handover_reconciliation.sql',import.meta.url),'utf8')
 const owner=randomUUID(), staff=randomUUID()
@@ -44,20 +44,22 @@ test('isolated PostgreSQL: calculation parity, append/reload, retries, stale sub
     await db.exec(schema)
     await db.query('insert into qa_source values ($1,$2)',[raw,expenses])
     await db.exec(migration)
+    const update=fs.readFileSync(new URL('../supabase/migrations/20261119020000_owner_receipts_entry_date.sql',import.meta.url),'utf8')
+    await db.exec(update.slice(update.indexOf('create or replace function private.cash_handover_expected')))
     const expected=async(data=raw,ex=expenses)=> (await db.query('select private.cash_handover_expected($1,$2,$3) as n',[day,data,ex])).rows[0].n
     assert.equal(Number(await expected()),700)
     assert.equal(Number(await expected()),buildOwnerDailyReceipts(raw,day,expenses).netRecordedCash)
     const variants=[
-      {...raw,daily_online:[{payment_date:day,amount:50,payment_method:'Cash',count_as_revenue:false,receipt_already_counted:false}]},
-      {...raw,daily_online:[{payment_date:day,amount:50,payment_method:'GCash',count_as_revenue:false,receipt_already_counted:true}]},
-      {...raw,pos_closings:[{business_date:day,outlet_id:'out',cash_sales:200}],daily_sales:[{...raw.daily_sales[0],notes:`SAGS-POS-SHIFT-CLOSING|out|${day}`}]},
+      {...raw,daily_online:[{payment_date:day,created_at:day+'T02:00:00Z',amount:50,payment_method:'Cash',count_as_revenue:false,receipt_already_counted:false}]},
+      {...raw,daily_online:[{payment_date:day,created_at:day+'T02:00:00Z',amount:50,payment_method:'GCash',count_as_revenue:false,receipt_already_counted:true}]},
+      {...raw,pos_closings:[{business_date:day,created_at:day+'T02:00:00Z',outlet_id:'out',cash_sales:200}],daily_sales:[{...raw.daily_sales[0],notes:`SAGS-POS-SHIFT-CLOSING|out|${day}`}]},
       {...raw,outlet_remittances:[{status:'approved',created_at:day+'T02:00:00Z',actual_remitted_amount:300,payment_method:'Cash'}]}
     ]
     for(const data of variants) assert.equal(Number(await expected(data)),buildOwnerDailyReceipts(data,day,expenses).netRecordedCash)
     await assert.rejects(expected({...raw,daily_sales:[{...raw.daily_sales[0],cash_received:null}]}),/Review Daily Sales/)
     await assert.rejects(expected(raw,[{status:'approved',expense_date:day}]),/Review expense/)
-    await assert.rejects(expected({...raw,daily_online:[{payment_date:day,amount:10,count_as_revenue:false}]}),/ambiguous/)
-    await assert.rejects(expected({...raw,reseller_payments:[{payment_date:day,amount:10,payment_method:''}]}),/unknown/)
+    await assert.rejects(expected({...raw,daily_online:[{payment_date:day,created_at:day+'T02:00:00Z',amount:10,count_as_revenue:false}]}),/ambiguous/)
+    await assert.rejects(expected({...raw,reseller_payments:[{payment_date:day,created_at:day+'T02:00:00Z',amount:10,payment_method:''}]}),/unknown/)
     assert.equal(canReconcile(buildOwnerDailyReceipts(raw,day,expenses)),true)
     await db.exec(`select set_config('request.jwt.claim.sub','${owner}',false); set role authenticated;`)
     const save=async(values)=> (await db.query('select public.owner_save_cash_handover($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) as id',values)).rows[0].id

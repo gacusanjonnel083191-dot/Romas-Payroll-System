@@ -68,5 +68,6 @@ test('daily monitor aggregates shifts and owner receipts exclude a duplicate dai
   assert.equal(posClosingReceipts([summary,...rows]).length,2)
   const report = buildOwnerDailyReceipts({pos_closings:[summary,...rows]},'2026-10-15')
   const once = buildOwnerDailyReceipts({pos_closings:rows},'2026-10-15')
-  assert.deepEqual(report,once)
+  assert.equal(report.totals.cash,1774.7)
+  assert.equal(once.totals.cash,0, 'cashier shifts are not admin-recorded entries')
 })
