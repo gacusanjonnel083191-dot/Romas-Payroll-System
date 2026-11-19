@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { buildOwnerDailyReceipts, ownerReceiptBreakdown } from './ownerDailyReceipts'
+import { buildOwnerDailyReceipts, ownerReceiptBreakdown, supportsReceiptBasis } from './ownerDailyReceipts'
 import OwnerCashExpenses from './OwnerCashExpenses'
 import SourceBreakdown from './SourceBreakdown.jsx'
 import CashHandover from './CashHandover.jsx'
@@ -40,7 +40,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
         supabase.from('cash_handover_events').select('*').eq('business_date', selectedDate).order('revision', { ascending:false })
       ])
       if (requestId !== requestRef.current) return
-      const requestError = receiptResult.error || expenseResult.error || (receiptResult.data?.receipt_basis !== 'entry_date_v1' ? { message:'Entry-date reporting update is required before this report can be used.' } : null)
+      const requestError = receiptResult.error || expenseResult.error || (!supportsReceiptBasis(receiptResult.data?.receipt_basis) ? { message:'The receipts report version is not supported by this app. Refresh the app or contact the administrator.' } : null)
       if (requestError) { setRaw(null); setError('Daily receipts could not be loaded: ' + requestError.message) }
       else {
         setHandoverError(handoverResult.error ? 'Cash handover history could not be loaded. Saving is unavailable: ' + handoverResult.error.message : '')
@@ -71,7 +71,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:12 }}>
       <div>
         <h3 style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:18 }}>Owner daily receipts</h3>
-        <p style={{ margin:0, color:'#666', fontSize:12 }}>Payments and sales entries follow the date first recorded in Philippine time. POS totals use admin-recorded daily summaries, not cashier shift closings.</p>
+        <p style={{ margin:0, color:'#666', fontSize:12 }}>Payments and sales entries follow the date first recorded in Philippine time. {raw?.receipt_basis === 'entry_date_v2_myra_cash' ? 'POS cash uses the amount actually received by Myra; POS sales summaries are not cash receipts.' : 'POS totals use admin-recorded daily summaries, not cashier shift closings.'}</p>
       </div>
       <div style={{ display:'flex', gap:8, alignItems:'center' }}>
         <input aria-label="Daily receipts date" type="date" value={date} max={today} onChange={event=>setDate(event.target.value)} style={{ padding:8, minHeight:40, border:'1px solid #ccc', borderRadius:7 }} />
@@ -88,6 +88,9 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
           <div style={{fontSize:11, marginTop:5, color:'#555'}}>View source details →</div>
         </button>)}
       </div>
+      {report.pendingPosReceipts.length > 0 && <p role="status" style={{ background:'#fff8e7', padding:10, borderRadius:8, fontSize:12 }}>
+        {report.pendingPosReceipts.length} POS shift(s) for this date have no recorded cash receipt from Myra. Their cash is excluded from confirmed receipts until receipt is recorded.
+      </p>}
       {selectedSource && <SourceBreakdown title={cards.find(row=>row[1] === selectedSource)?.[0] + ' · ' + date}
         rows={ownerReceiptBreakdown(report, selectedSource)} total={cards.find(row=>row[1] === selectedSource)?.[2]}
         explanation={selectedSource === 'salesEntered' ? 'Sales created on this Manila date, including backdated entries. Payment-only activity is excluded.' : selectedSource === 'deliveredUnpaid' ? 'Delivered invoices for this date: invoice amount minus payments, with balances below zero treated as zero.' : selectedSource === 'actualCashCount' ? 'Latest owner physical count for this date; legacy reconciliation is used only if no handover exists. No count is different from a counted zero.' : 'These are the exact source rows used above. Philippine entry dates determine inclusion; unconfirmed methods are excluded from total confirmed payments.'}

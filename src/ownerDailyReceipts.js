@@ -29,7 +29,10 @@ export function paymentBucket(method) {
   return 'unknown'
 }
 
+export const supportsReceiptBasis = basis => ['entry_date_v1', 'entry_date_v2_myra_cash'].includes(basis)
+
 export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
+  const usesReceivedCash = data.receipt_basis === 'entry_date_v2_myra_cash'
   const sales = data.daily_sales || []
   const online = data.daily_online || []
   const reseller = data.reseller_payments || []
@@ -61,7 +64,7 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   for (const row of sales) {
     const amount = cents(row.total_walkin) + cents(row.total_messenger)
     const marker = String(row.notes || '').match(/SAGS-POS-SHIFT-CLOSING\|([^|\s;]+)\|(\d{4}-\d{2}-\d{2})/)
-    const matchedPos = marker && closingKeys.has(`${marker[1]}|${marker[2]}`)
+    const matchedPos = marker && (usesReceivedCash || closingKeys.has(`${marker[1]}|${marker[2]}`))
     addEntered('Daily Sales', row, money(amount), row.encoded_by || 'Daily Sales', row.sale_date)
     if (manilaDate(row.created_at) !== date || amount <= 0 || matchedPos) continue
     const fields = ['cash_received','gcash_received','other_online_received','unpaid_amount']
@@ -76,11 +79,18 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
     totals.unpaid += cents(row.unpaid_amount)
   }
   for (const row of pos) {
-    addReceipt('POS', row, row.cash_sales, 'Cash', row.business_date, row.outlet_id || 'POS shift')
+    if (!usesReceivedCash) addReceipt('POS', row, row.cash_sales, 'Cash', row.business_date, row.outlet_id || 'POS shift')
     addReceipt('POS GCash', row, row.gcash_sales, 'GCash', row.business_date, row.outlet_id || 'POS shift')
     addReceipt('POS Online', row, row.online_sales, 'Other Online', row.business_date, row.outlet_id || 'POS shift')
     const matchingSale = sales.some(sale => manilaDate(sale.created_at) === date && String(sale.notes || '').includes(`SAGS-POS-SHIFT-CLOSING|${row.outlet_id}|${row.business_date}`))
     if (!matchingSale) addEntered('POS', row, row.total_sales, row.outlet_id || 'POS shift', row.business_date)
+  }
+  if (usesReceivedCash) {
+    for (const row of data.pos_cash_receipts || []) {
+      if (manilaDate(row.received_at) !== date) continue
+      addReceipt('POS cash received', { ...row, created_at:row.received_at, recorded_by:row.received_by || row.recorded_by },
+        row.actual_received, 'Cash', row.business_date, row.outlet_id || 'POS')
+    }
   }
   for (const row of online) {
     if (String(row.status || 'active').toLowerCase() === 'void') continue
@@ -151,6 +161,7 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   totals.totalReceived = totals.cash + totals.gcash + totals.otherOnline
   return {
     totals:Object.fromEntries(Object.entries(totals).map(([key,value]) => [key,money(value)])),
+    pendingPosReceipts:usesReceivedCash ? data.pos_pending_receipts || [] : [],
     receipts, entered, deliveredUnpaidInvoices, deliveredUnpaid:money(deliveredUnpaid),
     bankDeposits:money(cashDeposited), approvedExpenses:money(sum(expenses,'amount')),
     cashExpenseRows, cashExpensesPaid:money(cashExpensesPaid),
